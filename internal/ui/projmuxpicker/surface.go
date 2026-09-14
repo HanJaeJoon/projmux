@@ -90,10 +90,6 @@ func BandLineWithTheme(pickerTheme Theme, label, value, secondary string, cols i
 	return ChromeLineWithTheme(pickerTheme, line.String(), cols)
 }
 
-func ChromeLine(line string, cols int) string {
-	return ChromeLineWithTheme(DefaultTheme, line, cols)
-}
-
 func ChromeLineWithTheme(pickerTheme Theme, line string, cols int) string {
 	if cols <= 0 {
 		cols = DefaultCols
@@ -170,7 +166,7 @@ func QueryWithCursor(query string, cursor int) string {
 
 func QueryWithCursorAndTheme(pickerTheme Theme, query string, cursor int) string {
 	runes := []rune(query)
-	cursor = clampCursor(runes, cursor)
+	cursor = ClampCursor(runes, cursor)
 	cursorStart := themeCursor(pickerTheme)
 	if cursor == len(runes) {
 		return string(runes) + cursorStart + " " + Reset
@@ -375,10 +371,6 @@ func PadStyledLineWithTheme(pickerTheme Theme, line string, width int) string {
 	return line + padding
 }
 
-func padsInsideFinalStyle(line string) bool {
-	return padsInsideFinalStyleWithTheme(DefaultTheme, line)
-}
-
 func padsInsideFinalStyleWithTheme(pickerTheme Theme, line string) bool {
 	return strings.Contains(line, themeSelected(pickerTheme)) || strings.Contains(line, themeCursor(pickerTheme))
 }
@@ -489,7 +481,8 @@ func themeContinuation(pickerTheme Theme) string {
 	return themePointer(pickerTheme)
 }
 
-func clampCursor(runes []rune, cursor int) int {
+// ClampCursor confines a cursor index to the closed range [0, len(runes)].
+func ClampCursor(runes []rune, cursor int) int {
 	if cursor < 0 {
 		return 0
 	}
