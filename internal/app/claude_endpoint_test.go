@@ -29,6 +29,8 @@ type claudeEndpointTestFixture struct {
 	provider  *exec.Cmd
 	inbox     *net.UnixListener
 	root      string
+	// idle, when set, replaces the production idle Registry gate inputs.
+	idle *claudeEndpointIdleOptions
 }
 
 func TestClaudeEndpointHookMigrationPreservesStatusAndUserHooks(t *testing.T) {
@@ -97,7 +99,7 @@ func TestClaudeEndpointHookMigrationPreservesStatusAndUserHooks(t *testing.T) {
 	}
 }
 
-func newClaudeEndpointTestFixture(t *testing.T) *claudeEndpointTestFixture {
+func newClaudeEndpointTestFixture(t testing.TB) *claudeEndpointTestFixture {
 	t.Helper()
 	root, err := os.MkdirTemp("", "pce-test-")
 	if err != nil {
@@ -164,13 +166,20 @@ func (f *claudeEndpointTestFixture) route(t *testing.T) (coremetadata.AgentRoute
 	return coremetadata.ResolveAgentRoute(reg, f.bootstrap.AgentUID)
 }
 
-func (f *claudeEndpointTestFixture) start(t *testing.T) (context.CancelFunc, <-chan error) {
+func (f *claudeEndpointTestFixture) start(t testing.TB) (context.CancelFunc, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	readAck, writeAck := io.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- serveClaudeEndpoint(ctx, f.bootstrap, writeAck); close(done); _ = writeAck.Close() }()
+	serve := serveClaudeEndpoint
+	if f.idle != nil {
+		idle := *f.idle
+		serve = func(ctx context.Context, bootstrap claudeEndpointBootstrap, ack io.Writer) error {
+			return serveClaudeEndpointWithIdleGate(ctx, bootstrap, ack, idle)
+		}
+	}
+	go func() { done <- serve(ctx, f.bootstrap, writeAck); close(done); _ = writeAck.Close() }()
 	ackDone := make(chan bool, 1)
 	go func() {
 		var ack [1]byte
