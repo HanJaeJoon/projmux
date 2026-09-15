@@ -49,6 +49,29 @@ type settingsCommand struct {
 	// whatever Registry the host machine has.
 	resourceRegistry func() (coremetadata.Registry, error)
 	feedback         *settingsFeedback
+
+	// pendingNavigation and pendingFocus are the landing a Settings-root search
+	// result asks for. Settings has no navigation state machine: descent is a
+	// plain recursive Go call per View and every View funnels through runPicker,
+	// so the landing is scripted input at that one funnel rather than a focus
+	// argument threaded through the twelve section loops.
+	//
+	// pendingNavigation is the remaining chain of picker Values; runPicker pops
+	// its head and answers Enter with it instead of rendering, and the owning
+	// loop descends on its own. pendingFocus is the target row, applied as a
+	// `start:pos` binding on the first frame that renders once the chain is
+	// spent. Both are cleared together the moment a frame does not carry the
+	// value the chain expects, so a landing never presses Enter on a row it did
+	// not mean to.
+	pendingNavigation []string
+	pendingFocus      string
+	// pendingFocusLabel is the same target named a second way: the localized
+	// text the row renders in its name column. Rows whose picker Value is the
+	// shared no-op sentinel, or is only assembled at render time from a saved
+	// path, a resolved hex or a present/absent hook, have no value to match; the
+	// name they display is the name the user searched for, so that is what the
+	// landing matches when the value target finds nothing.
+	pendingFocusLabel string
 }
 
 type settingsFeedback struct {
@@ -149,6 +172,30 @@ func (c *settingsCommand) Run(args []string, stdout, stderr io.Writer) error {
 		if section == settingsNoopValue {
 			continue
 		}
+		if _, _, isResult := parseSettingsRootResultValue(section); isResult {
+			// A result row is a destination, never a control: the chain below
+			// contains only View rows and the last step is a focus. A row the
+			// walk could not give a chain stays inert rather than falling
+			// through to runSection with a value no loop owns.
+			landing, ok := c.settingsRootResultLanding(tab, section)
+			if !ok || len(landing.Navigation) == 0 {
+				continue
+			}
+			// The root frame has already been answered, so its own chain step
+			// is entered here; runPicker replays the rest.
+			c.pendingNavigation = landing.Navigation[1:]
+			c.pendingFocus = landing.Focus
+			c.pendingFocusLabel = landing.FocusLabel
+			if err := c.runSection(landing.Navigation[0], stdout, stderr); err != nil {
+				c.clearSettingsLanding()
+				if errors.Is(err, errSettingsClosed) {
+					return nil
+				}
+				return err
+			}
+			c.clearSettingsLanding()
+			continue
+		}
 
 		if err := c.runSection(section, stdout, stderr); err != nil {
 			if errors.Is(err, errSettingsClosed) {
@@ -232,6 +279,15 @@ func (c *settingsCommand) runPicker(options intpickercompat.Options) (intpickerc
 	if err := validateSettingsEntryContracts(options); err != nil {
 		return intpickercompat.Result{}, err
 	}
+	// A frame a landing answers is still contract-checked above, so scripting
+	// the descent cannot hide a builder that breaks the entry contract.
+	if result, ok := c.settingsLandingStep(options); ok {
+		return result, nil
+	}
+	// The focus index is resolved here, after every decorator: withSettingsFeedback
+	// inserts a row at index 0 (or 1 behind a Back row), so an index a section
+	// loop computed over its own Entries would be off by one.
+	options = c.withSettingsLandingFocus(options)
 	if options.Theme == nil {
 		if source, err := configRenderThemeSource(c.homeDir, c.lookupEnv, c.resolveSettingsProjectContext().Path); err == nil {
 			options = source.pickerCompatOptions(options)
@@ -246,6 +302,158 @@ func (c *settingsCommand) runPicker(options intpickercompat.Options) (intpickerc
 	}
 	c.clearSettingsFeedbackFor(strings.TrimSpace(result.Value))
 	return result, nil
+}
+
+// settingsLandingStep answers one frame of a pending Settings-root landing
+// without rendering it, so the section loop that owns the frame descends on its
+// own and no loop needs a focus argument.
+//
+// The guard is deliberately unforgiving: the expected value must be a row of
+// this very frame. It cannot be, and never becomes, "press whatever looks
+// close" — if the row is not here the whole landing is abandoned and the frame
+// renders normally, which is the same outcome the user gets when a destination
+// disappeared between the search and the press.
+//
+// Nothing here re-checks that the value is a navigation row, because nothing
+// here could: settingsEntryMetaForValue classifies genuine View openers such as
+// `theme:tokens`, `sessionstate:view-autosave` and `keymap:<action>` as Action,
+// since they share a prefix with mutations. The proof is upstream instead —
+// settingsRootResultLandings only ever appends a chain step for a catalog node
+// whose Kind is View — so an Action, Confirm, Edit or Toggle value can never
+// reach this function.
+func (c *settingsCommand) settingsLandingStep(options intpickercompat.Options) (intpickercompat.Result, bool) {
+	if c == nil || len(c.pendingNavigation) == 0 {
+		return intpickercompat.Result{}, false
+	}
+	want := c.pendingNavigation[0]
+	if want == "" || !settingsOptionsHaveValue(options, want) {
+		c.clearSettingsLanding()
+		return intpickercompat.Result{}, false
+	}
+	c.pendingNavigation = c.pendingNavigation[1:]
+	return intpickercompat.Result{Key: "enter", Value: want}, true
+}
+
+// withSettingsLandingFocus puts the cursor on the row a search result named.
+// A missing target appends nothing, so the View opens on its first row: a
+// result row is a destination, and a destination that is no longer rendered is
+// not an error.
+func (c *settingsCommand) withSettingsLandingFocus(options intpickercompat.Options) intpickercompat.Options {
+	if c == nil || len(c.pendingNavigation) > 0 || (c.pendingFocus == "" && c.pendingFocusLabel == "") {
+		return options
+	}
+	focus, label := c.pendingFocus, c.pendingFocusLabel
+	c.pendingFocus = ""
+	c.pendingFocusLabel = ""
+	index, ok := settingsOptionsFocusIndex(options, focus, label)
+	if !ok {
+		return options
+	}
+	// `start:pos(N)` is 1-based and indexes the filtered list; Settings Views
+	// carry an empty InitialQuery, so the Entries order is the filtered order.
+	options.Bindings = append(append([]string(nil), options.Bindings...), fmt.Sprintf("start:pos(%d)", index+1))
+	return options
+}
+
+func (c *settingsCommand) clearSettingsLanding() {
+	if c == nil {
+		return
+	}
+	c.pendingNavigation = nil
+	c.pendingFocus = ""
+	c.pendingFocusLabel = ""
+}
+
+func settingsOptionsHaveValue(options intpickercompat.Options, value string) bool {
+	for _, entry := range options.Entries {
+		if strings.TrimSpace(entry.Value) == value {
+			return true
+		}
+	}
+	return false
+}
+
+// settingsOptionsFocusIndex resolves a landing target to a row index. An exact
+// value wins; otherwise the target is the stable leading segment of a row whose
+// value carries the state Enter would apply, and the first row under it wins;
+// otherwise the row is named by the text it renders.
+//
+// The order matters: a value is what the builder emits, so it identifies the
+// row without reading anything the row displays. The label is the weaker of the
+// two and is only reached when the value target named nothing or is not here.
+func settingsOptionsFocusIndex(options intpickercompat.Options, focus, label string) (int, bool) {
+	if focus != "" {
+		for i, entry := range options.Entries {
+			if strings.TrimSpace(entry.Value) == focus {
+				return i, true
+			}
+		}
+		for i, entry := range options.Entries {
+			if strings.HasPrefix(strings.TrimSpace(entry.Value), focus+":") {
+				return i, true
+			}
+		}
+	}
+	return settingsOptionsLabelFocusIndex(options, label)
+}
+
+// settingsOptionsLabelFocusIndex finds the row whose name column reads exactly
+// like the target label.
+//
+// Only the name column counts, and only an exact match of it: a description is
+// prose that neighbouring rows routinely repeat, and a containment test on the
+// whole row would let "Storage" pick the row that merely mentions storage. Two
+// rows with the same name focus neither — a wrong focus moves the user's cursor
+// onto a control they did not search for, which is worse than opening on the
+// View's first row, so an ambiguous target is dropped exactly like an unnamed
+// one.
+func settingsOptionsLabelFocusIndex(options intpickercompat.Options, label string) (int, bool) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return 0, false
+	}
+	found := -1
+	for i, entry := range options.Entries {
+		if settingsRowNameColumn(entry.Label) != label {
+			continue
+		}
+		if found >= 0 {
+			return 0, false
+		}
+		found = i
+	}
+	if found < 0 {
+		return 0, false
+	}
+	return found, true
+}
+
+// settingsRowNameColumn is the name a rendered Settings row displays, with the
+// escapes and the surrounding columns removed.
+//
+// Every row builder in settings_render.go writes the same shape: a one-cell
+// glyph, the two-space gap, the name padded out to the name column, and — when
+// the row has one — the two-space gap again and the description. So the name is
+// what lies between the first and the second gap. This splits on that literal
+// gap rather than measuring cells: the padding is already written into the
+// string, and a second character-width table here would be a second authority
+// on how wide a row is.
+func settingsRowNameColumn(label string) string {
+	plain := stripSettingsLabelANSI(label)
+	if _, rest, ok := strings.Cut(plain, settingsLabelColumnGap); ok {
+		plain = rest
+	}
+	name, _, _ := strings.Cut(plain, settingsLabelColumnGap)
+	return strings.TrimSpace(name)
+}
+
+// settingsRootResultLanding resolves a rendered result row back to its
+// destination. It replays the same walk that rendered the row, so the row and
+// its destination cannot drift apart.
+func (c *settingsCommand) settingsRootResultLanding(tab settingsRootTab, value string) (settingsRootResultLanding, bool) {
+	_, landings := settingsRootResultLandings(tab, c.locale())
+	landing, ok := landings[value]
+	return landing, ok
 }
 
 // withSettingsClosePolicy makes the command's effective SettingsToggle alias
