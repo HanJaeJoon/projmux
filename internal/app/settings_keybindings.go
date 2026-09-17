@@ -2622,7 +2622,7 @@ func (c *settingsCommand) regenerateAndReloadTmuxConfig() (prepared keymapApplyS
 		return prepared, live, genErr
 	}
 	prepared = keymapApplyStage{Status: keymapApplyOK, Detail: "generated tmux config: " + configPath}
-	if c.lookupEnv == nil || strings.TrimSpace(c.lookupEnv("TMUX")) == "" {
+	if (c.lookupEnv == nil || strings.TrimSpace(c.lookupEnv("TMUX")) == "") && !c.reloadAppServer {
 		live = keymapApplyStage{Status: keymapApplySkipped, Detail: "Settings is not running inside tmux"}
 		return prepared, live, nil
 	}
@@ -2634,14 +2634,12 @@ func (c *settingsCommand) regenerateAndReloadTmuxConfig() (prepared keymapApplyS
 	route, routeErr := resolveInvocationRuntimeMutationRoute(ctx, c.tmuxRunner, c.lookupEnv)
 	if routeErr != nil || route.expectedSocketPath == "" {
 		if routeErr == nil {
-			//lint:ignore ST1005 Settings is the canonical product-surface name in this diagnostic.
 			routeErr = errors.New("Settings live reload has no exact physical socket")
 		}
 		live = keymapApplyStage{Status: keymapApplyFailed, Detail: keymapApplyDiagnostic("exact live tmux route", routeErr)}
 		return prepared, live, routeErr
 	}
 	if route.authority != nil && route.authority.Class == runtimeMutationRouteStandalone {
-		//lint:ignore ST1005 Settings is the canonical product-surface name in this diagnostic.
 		routeErr = errors.New("Settings live reload refuses an operator-owned standalone tmux server")
 		live = keymapApplyStage{Status: keymapApplyFailed, Detail: keymapApplyDiagnostic("exact live tmux route", routeErr)}
 		return prepared, live, routeErr

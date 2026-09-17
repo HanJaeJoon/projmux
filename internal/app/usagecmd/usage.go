@@ -437,12 +437,23 @@ func (c *Command) CachedState() (usage.State, []UnsupportedProvider, time.Time, 
 	state = filterUsageStateByModels(state, modelScope)
 	unsupported := c.unsupportedUsageProviders("all", false)
 	var cacheMTime time.Time
-	if stateDir, err := c.resolveStateDir(); err == nil {
-		if info, statErr := os.Stat(usage.NewStore(stateDir).FilePath()); statErr == nil {
+	if file, err := c.SnapshotCacheFile(); err == nil {
+		if info, statErr := os.Stat(file); statErr == nil {
 			cacheMTime = info.ModTime()
 		}
 	}
 	return state, unsupported, cacheMTime, nil
+}
+
+// SnapshotCacheFile is the snapshot cache file the usage store reads and
+// writes, resolved the way the store's directory is, so a watcher follows
+// the same file CachedState loads.
+func (c *Command) SnapshotCacheFile() (string, error) {
+	stateDir, err := c.resolveStateDir()
+	if err != nil {
+		return "", err
+	}
+	return usage.NewStore(stateDir).FilePath(), nil
 }
 
 func (c *Command) modelScope(model string) ([]string, bool) {
@@ -1531,6 +1542,36 @@ func (c *Command) loadHUDVisibilityPreferences() hudVisibilityPreferences {
 	return prefs
 }
 
+// HUDSnapshots returns the windows the ambient status bar HUD draws from
+// snaps, in the order it draws them: the projected 5h and weekly windows under
+// the Settings visibility, with placeholder rows dropped.
+func (c *Command) HUDSnapshots(snaps []usage.Snapshot) []usage.Snapshot {
+	projected := filterStatusProjectionByVisibility(projectStatusSnapshots(snaps), c.loadHUDVisibilityPreferences())
+	byKey := make(map[string]usage.Snapshot, len(projected))
+	for _, s := range projected {
+		byKey[s.Model+"\x00"+string(s.Window)] = s
+	}
+	out := make([]usage.Snapshot, 0, len(projected))
+	for _, model := range buildModelDisplays(projected) {
+		for _, window := range []usage.Window{usage.Window5h, usage.WindowWeekly} {
+			if s, ok := byKey[model.model+"\x00"+string(window)]; ok && !isHUDPlaceholder(s) {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func isHUDPlaceholder(s usage.Snapshot) bool {
+	return s.Pct == 0 && s.ResetsAt.IsZero() && s.Limit == 0 && s.Window != usage.WindowContext && s.Window != usage.WindowQuota
+}
+
+// FallbackProvenance reports whether the HUD marks snapshot as read from the
+// fallback source.
+func FallbackProvenance(snapshot usage.Snapshot) bool {
+	return compactModelFallbackProvenance(snapshot)
+}
+
 func (c *Command) hudVisibilityConfigPaths() (config.Paths, error) {
 	home := strings.TrimSpace(c.env("HOME"))
 	if home == "" {
@@ -1648,7 +1689,7 @@ func buildModelDisplays(snaps []usage.Snapshot) []modelDisplay {
 	order := make([]string, 0, 2)
 	for i := range snaps {
 		s := snaps[i]
-		if s.Pct == 0 && s.ResetsAt.IsZero() && s.Limit == 0 && s.Window != usage.WindowContext && s.Window != usage.WindowQuota {
+		if isHUDPlaceholder(s) {
 			continue
 		}
 		row, ok := byModel[s.Model]

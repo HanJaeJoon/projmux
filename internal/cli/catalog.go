@@ -610,6 +610,10 @@ type Route struct {
 	Namespace bool
 	// Usage holds representative synopsis lines (not an exhaustive flag list).
 	Usage []string
+	// Notes are short paragraphs about behavior a synopsis cannot show, such
+	// as what a listener requires of its callers. Help and the generated
+	// reference print them under the usage lines.
+	Notes []string
 	// Canonical lists the canonical route spellings this executable node reaches.
 	// The node whose own path appears in this list owns that canonical command;
 	// other entries are explicit source aliases. CanonicalRoutes, help hints, and
@@ -997,7 +1001,7 @@ var routes = []Route{
 			"projmux create project --root <absolute-path> [--name <name>] [--label key=value]... [-o <mode>]",
 			"projmux create window [--project <ref> | -p <ref>] [--name <name>] [--label key=value]... [-o <mode>] [-- <payload>]",
 			"projmux create pane [--project <ref> | -p <ref>] [--window <ref> | -w <ref>]... [--pane <ref>]... [--create-window] [--all-windows | --primary-window] [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
-			"projmux create agent --provider <provider> [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--interactive-only] [--window <ref> | -w <ref>]... [--pane <ref>]... [--create-window] [--all-windows | --primary-window] [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
+			"projmux create agent --provider <provider> [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--interactive-only] [--model <model>] [--effort <level>] [--window <ref> | -w <ref>]... [--pane <ref>]... [--create-window] [--all-windows | --primary-window] [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
 			"projmux create codex [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--interactive-only] [--window <ref> | -w <ref>]... [--create-window] [--all-windows | --primary-window] [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
 			"projmux create claude|antigravity [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--window <ref> | -w <ref>]... [--create-window] [--all-windows | --primary-window] [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
 			"projmux create notification --text <s> --target <SESSION[:WINDOW[.PANE]]> [--socket <s>]",
@@ -1070,7 +1074,7 @@ var routes = []Route{
 				Summary:          "Create an Agent detached on an explicit Pane or the Window's exact shell or Agent anchor; --provider is required",
 				CanonicalSummary: "Create an Agent and its managed Pane",
 				Usage: []string{
-					"projmux create agent --provider <provider> [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--interactive-only] [--window <ref> | -w <ref>]... [--pane <ref>]... [--selector key=value]... [--create-window] [--all-windows | --primary-window] [--name <name>] [--label key=value]... [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
+					"projmux create agent --provider <provider> [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--interactive-only] [--model <model>] [--effort <level>] [--window <ref> | -w <ref>]... [--pane <ref>]... [--selector key=value]... [--create-window] [--all-windows | --primary-window] [--name <name>] [--label key=value]... [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
 				},
 				Outputs:   receiptOutputModes,
 				Canonical: []string{"create agent"},
@@ -1101,7 +1105,7 @@ var routes = []Route{
 				Invocation: InvocationNatural,
 				Summary:    "Provider shortcut for create agent --provider claude",
 				Usage: []string{
-					"projmux create claude [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--window <ref> | -w <ref>]... [--pane <ref>]... [--selector key=value]... [--create-window] [--all-windows | --primary-window] [--name <name>] [--label key=value]... [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
+					"projmux create claude [--project <ref> | -p <ref>] [--cwd <path>] [--add-dir <path>]... [--model <model>] [--effort <level>] [--window <ref> | -w <ref>]... [--pane <ref>]... [--selector key=value]... [--create-window] [--all-windows | --primary-window] [--name <name>] [--label key=value]... [--placement right|down] [--cwd-from project|pane] [-o <mode>] [-- <payload>]",
 				},
 				ProviderShortcut: true,
 				Outputs:          receiptOutputModes,
@@ -1810,6 +1814,18 @@ var routes = []Route{
 			{Effects: unchangedEffects(CardinalityUnchanged), Name: "status", Invocation: InvocationFanOut, Summary: "Show read-only update status", Canonical: []string{"update status"}},
 			{Effects: unchangedEffects(CardinalityUnchanged), Name: "check", Invocation: InvocationFanOut, Summary: "Check for a newer release and refresh the cache", Canonical: []string{"update check"}},
 			{Effects: unchangedEffects(CardinalityUnchanged), Name: "apply", Invocation: InvocationFanOut, Summary: "Apply an available update", Canonical: []string{"update apply"}},
+		},
+	},
+	{
+		Effects:     unchangedEffects(CardinalityUnchanged),
+		Name:        "web",
+		Invocation:  InvocationNatural,
+		Summary:     "Serve the HTTP API and browser client",
+		Disposition: DispositionShortcut,
+		Usage:       []string{"projmux web [--addr 127.0.0.1:8787] [--socket PATH|-] [-v]"},
+		Notes: []string{
+			"Every request on the TCP listener needs the start token, a fresh random value printed once at start in the URL `http://<addr>/?token=<token>`. Opening that URL stores the token in an HttpOnly, SameSite=Strict cookie and redirects to the same address without it; other clients send `Authorization: Bearer <token>`. A request without the token is refused with 401 `unauthorized`.",
+			"The unix socket needs no token: its owner-only file mode is its access control.",
 		},
 	},
 	{
