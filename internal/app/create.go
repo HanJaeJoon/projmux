@@ -52,6 +52,18 @@ type agentLauncher interface {
 	AwaitAgentActivation(context.Context, tmuxCommandRunner, string, time.Duration, time.Duration) (bool, string, error)
 }
 
+// quietAgentLaunchPreflight is the Settings gate and the provider runner check
+// without the ambient tmux message the launcher's own refusals show
+// (RequireAgentEnabled, and the runner lookup behind PlanAgentLaunch). A
+// producer that owns the one line its client reads -- the UI new Window --
+// asks here before it writes anything, so a refusal is reported exactly once,
+// on that client. Each method returns the refusal sentence and true, or "" and
+// false when the launch may proceed.
+type quietAgentLaunchPreflight interface {
+	QuietAgentDisabledMessage(provider string) (string, bool)
+	QuietMissingAgentRunnerMessage(provider string) (string, bool)
+}
+
 type claudeOptionsAgentLauncher interface {
 	PlanAgentLaunchWithOptions(provider string, workspace coremetadata.AgentWorkspace, payload []string, model, effort, personaFile string) (title string, argv []string, err error)
 }
@@ -509,20 +521,30 @@ func (c *createCommand) createFromIntent(intent agentPaneIntent, stdout, stderr 
 		created, createErr := c.createCanonicalIntentPane(scope, intent, launchDir, stdout)
 		return created, finishSplitIntent(stderr, notice, createErr)
 	}
-	// A resume cannot be spelled: `create` has no public `--resume`. The intent
-	// route still parses the exact public argv before attaching its private
-	// conversation field, so placement and provider validation remain shared.
+	flags, err := intentAgentFlags(intent, argv, conversation, stderr)
+	if err != nil {
+		return createdPaneRuntime{}, err
+	}
+	created, err := c.createCanonicalIntentAgent(scope, intent, provider, launchDir, flags, stdout)
+	return created, finishSplitIntent(stderr, notice, err)
+}
+
+// intentAgentFlags parses an Agent intent's canonical argv into the create
+// flags and attaches its resume fields. A resume cannot be spelled: `create`
+// has no public `--resume`. The intent route still parses the exact public argv
+// before attaching its private conversation field, so placement and provider
+// validation remain shared.
+func intentAgentFlags(intent agentPaneIntent, argv []string, conversation string, stderr io.Writer) (resourceCreateFlags, error) {
 	shape := resourceCreateShape{split: true, provider: true}
 	flags, err := parseResourceCreateFlags(canonicalCreateAgent, argv[1:], stderr, shape)
 	if err != nil {
-		return createdPaneRuntime{}, err
+		return resourceCreateFlags{}, err
 	}
 	flags.resumeConversation = conversation
 	flags.resumeSource = strings.TrimSpace(intent.resumeSource)
 	flags.resumeEndpoint = intent.resumeEndpoint
 	flags.resumeGenerationState = intent.resumeGenerationState
-	created, err := c.createCanonicalIntentAgent(scope, intent, provider, launchDir, flags, stdout)
-	return created, finishSplitIntent(stderr, notice, err)
+	return flags, nil
 }
 
 // visibleCanonicalCreateError prevents a subprocess ExitCode from escaping a
