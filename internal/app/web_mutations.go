@@ -363,6 +363,12 @@ func (b *webBackend) agentScope(ctx context.Context, agent string) (project, win
 	if err != nil {
 		return "", "", err
 	}
+	return s.agentScope(agent)
+}
+
+// agentScope resolves the Project and Window an Agent belongs to from this
+// snapshot. agent must be an exact Agent uid.
+func (s webSnapshot) agentScope(agent string) (project, window string, err error) {
 	found, ok := s.registry.Agent(agent)
 	if !ok {
 		return "", "", web.NotFound("no agent " + agent)
@@ -372,6 +378,37 @@ func (b *webBackend) agentScope(ctx context.Context, agent string) (project, win
 		return "", "", web.NotFound("agent " + agent + " has no window")
 	}
 	return owner.Metadata.OwnerUID(), owner.Metadata.UID, nil
+}
+
+// StopProject ends the Project's persistent tmux session through the same
+// `stop project` the CLI runs; the Project, its Windows and Agents, and its
+// root stay. The Project is resolved from one snapshot by exact uid, so a name
+// or an unknown uid is not-found before anything runs. `stop project` has no
+// dry run, so a dry run runs nothing: its plan is fixed text and its
+// runningAgents are the Running Agents of the Project's Windows, from the same
+// Registry read.
+func (b *webBackend) StopProject(ctx context.Context, project string, dryRun bool) (any, error) {
+	s, err := b.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := s.registry.Project(project); !ok {
+		return nil, web.NotFound("no project " + project)
+	}
+	if dryRun {
+		return map[string]any{"uid": project, "dryRun": true,
+			"plan": "stop project uid:" + project + ": ends the Project's tmux session; the Project, its Windows and Agents stay registered",
+			"runningAgents": s.runningAgents(func(agent coremetadata.Agent) bool {
+				owner, _ := agentProject(&s.registry, agent.Metadata.UID)
+				return owner == project
+			}),
+		}, nil
+	}
+	out, err := b.cli("stop", "project", "uid:"+project)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"uid": project, "plan": strings.TrimSpace(out)}, nil
 }
 
 func (b *webBackend) DeleteWindow(ctx context.Context, project, window string, dryRun bool) (any, error) {
@@ -434,6 +471,41 @@ func (b *webBackend) DeletePane(ctx context.Context, project, window, pane strin
 	return map[string]any{"uid": pane, "dryRun": true, "plan": strings.TrimSpace(out),
 		"runningAgents": s.runningAgents(func(agent coremetadata.Agent) bool {
 			return agent.Status.PaneRef == pane || agent.Metadata.UID == paneOwner
+		}),
+	}, nil
+}
+
+// DeleteAgent deletes one Agent, and with it its managed Pane, through the
+// same `delete agent` the CLI runs. The Agent and its scope are resolved from
+// one snapshot by exact uid, so a name, a selector, or an unknown uid is
+// not-found before anything runs, and the dry run's runningAgents comes from
+// the Registry read the delete was checked against.
+func (b *webBackend) DeleteAgent(ctx context.Context, agent string, dryRun bool) (any, error) {
+	s, err := b.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	project, window, err := s.agentScope(agent)
+	if err != nil {
+		return nil, err
+	}
+	argv := []string{"delete", "agent", "uid:" + agent, "--project", "uid:" + project, "--window", "uid:" + window}
+	if dryRun {
+		argv = append(argv, "--dry-run")
+	} else {
+		argv = append(argv, "--yes")
+	}
+	argv = append(argv, "--socket", defaultAppSocket)
+	out, err := b.cli(argv...)
+	if err != nil {
+		return nil, err
+	}
+	if !dryRun {
+		return map[string]any{"uid": agent, "plan": strings.TrimSpace(out)}, nil
+	}
+	return map[string]any{"uid": agent, "dryRun": true, "plan": strings.TrimSpace(out),
+		"runningAgents": s.runningAgents(func(a coremetadata.Agent) bool {
+			return a.Metadata.UID == agent
 		}),
 	}, nil
 }

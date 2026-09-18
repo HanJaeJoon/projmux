@@ -10,10 +10,11 @@
   import { findProject, findSlot, findWindow, livePanes, locateSlot, paneLabel, slotRef, type PaneView } from "./lib/tree";
   import { setToggle, ui } from "./lib/ui.svelte";
   import Help from "./components/Help.svelte";
+  import Home from "./components/Home.svelte";
   import LayoutPreview from "./components/LayoutPreview.svelte";
   import NotifySidebar from "./components/NotifySidebar.svelte";
-  import Overview from "./components/Overview.svelte";
   import PaneSplit from "./components/PaneSplit.svelte";
+  import ProjectGraph from "./components/ProjectGraph.svelte";
   import ProjectSidebar from "./components/ProjectSidebar.svelte";
   import LaunchPicker from "./components/LaunchPicker.svelte";
   import ResumePicker from "./components/ResumePicker.svelte";
@@ -41,7 +42,7 @@
   });
 
   // A short `/a/{agent}` link becomes the agent's full address once the graph
-  // says where it is; an agent the graph does not have leads to the overview.
+  // says where it is; an agent the graph does not have leads to Home.
   $effect(() => {
     const agent = route.short;
     if (!agent || !live.updatedAt) return;
@@ -301,8 +302,15 @@
       <PaneSplit {project} {win} panes={drawn} focused={pane?.uid ?? null} />
     {:else if win}
       <div class="content" id="detail"><WindowRecord {win} /></div>
+    {:else if route.sel.project && !route.sel.window}
+      <!-- A Project's own address is its first tab, the Agent graph. -->
+      {#key route.sel.project}
+        <ProjectGraph projectUID={route.sel.project} {project} />
+      {/key}
     {:else}
-      <div class="content" id="detail"><Overview {project} /></div>
+      <!-- `/`, and any address whose Window is gone: every Agent of every
+           Project, by Project. -->
+      <div class="content" id="detail"><Home /></div>
     {/if}
   </main>
 

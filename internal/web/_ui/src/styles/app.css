@@ -410,6 +410,10 @@ h2 .count:empty { display: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   direction: rtl; text-align: left;
 }
+/* Home sits above the Projects, set off from them. Its line is a phrase, not
+   a path, so it is not read from the right. */
+.list > .home-item { margin-bottom: var(--s2); padding-bottom: var(--s2); border-bottom: 1px solid var(--rule); }
+.list > .home-item .sub { direction: ltr; }
 
 /* notify rows ------------------------------------------------------------- */
 
@@ -649,7 +653,10 @@ body.resizing-y { cursor: row-resize; user-select: none; }
   border-radius: 50%;
   background: var(--pane);
 }
-.slot[data-provider="shell"] .slot-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+.slot[data-provider="shell"] .slot-dot,
+.slot-dot.unknown { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+/* An Agent that is not running, wherever its dot is drawn. */
+.slot-dot.offline { background: var(--critical); }
 .slot-num { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .slot.focused .slot-num { color: var(--pane); }
 .slot-kind {
@@ -1427,52 +1434,36 @@ input.rename {
   border-color: color-mix(in oklab, var(--critical) 55%, transparent);
 }
 
-/* overview ---------------------------------------------------------------- */
+/* home: every Project's Agents as cards ---------------------------------- */
 
-.content .overview { max-width: 1100px; }
-.overview-head {
+.content .home { max-width: 1100px; }
+.home-head {
   display: flex;
   align-items: baseline;
   gap: var(--s4);
   flex-wrap: wrap;
   margin-bottom: var(--s4);
 }
-.overview-head h3 { margin: 0 !important; font-size: 16px !important; font-weight: 600; }
-.overview-sum { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.home-head h3 { margin: 0 !important; font-size: 16px !important; font-weight: 600; }
+.home-sum { font-size: 12px; color: var(--muted); font-family: var(--mono); }
 
-.cards {
+/* A group head is the page's section head (`#detail h4`), in ink: it names
+   a Project, not a field. */
+#detail .home-group-head { display: flex; align-items: baseline; gap: var(--s2); color: var(--ink); }
+#detail .home-group-head.dim { color: var(--muted); }
+.home-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.home-group-count { color: var(--muted); font-family: var(--mono); letter-spacing: 0; }
+/* The graph tab's card size, so a card reads the same in both places. */
+.home-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
   gap: var(--s3);
 }
-.card {
-  --pane: var(--muted);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-  text-align: left;
-  font: inherit;
-  color: var(--ink);
-  background: var(--raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: var(--s3) var(--s4);
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 var(--bevel);
-  transition: border-color var(--ease), transform var(--ease), background var(--ease);
-}
-.card:hover { border-color: color-mix(in oklab, var(--pane) 60%, var(--rule)); background: var(--active); }
-.card:active { transform: translateY(1px); }
-.card[data-provider="claude"], .picker-row[data-provider="claude"] { --pane: var(--h-success); }
-.card[data-provider="codex"], .picker-row[data-provider="codex"] { --pane: var(--h-warning); }
-.card[data-provider="antigravity"], .picker-row[data-provider="antigravity"] { --pane: var(--h-violet); }
-.card[data-activity="wait"] { border-color: color-mix(in oklab, var(--warning) 60%, transparent); }
-.card[data-activity="alert"] { border-color: var(--critical); box-shadow: 0 0 0 1px var(--critical); }
-.card-top { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
-.card-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-.card-where { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-meta { font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+.home-cards .agent-card { height: 76px; }
 
+.picker-row[data-provider="claude"] { --pane: var(--h-success); }
+.picker-row[data-provider="codex"] { --pane: var(--h-warning); }
+.picker-row[data-provider="antigravity"] { --pane: var(--h-violet); }
 .picker-row .slot-dot { align-self: center; }
 .picker-row .slot-activity { font-size: 10px; }
 
@@ -1804,3 +1795,227 @@ button.seg.path { text-align: right; max-width: 45vw; display: block; line-heigh
 .set-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
 .set-toggle.saving { cursor: progress; }
 .set-note { margin: var(--s3) 0 0; font-size: 11px; color: var(--muted); }
+
+/* agent graph: a Project's first tab -------------------------------------- */
+
+.tab.graph-tab { gap: 5px; }
+.graph-tab-mark { color: var(--muted); font-size: 11px; }
+.tab.graph-tab[aria-selected="true"] .graph-tab-mark { color: var(--accent); }
+
+.graph-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.graph-view > .empty { padding: 15px 17px; }
+.graph-banner { padding: 15px 17px; }
+.graph-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+.graph-canvas { position: relative; }
+
+/* An area is a Project: this one, or an outside one its Agents talked to. */
+.graph-area {
+  position: absolute;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--raised) 35%, transparent);
+}
+.graph-area.home { border-style: solid; background: color-mix(in oklab, var(--sunken) 60%, transparent); }
+.graph-area-label {
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  right: 12px;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-area.home .graph-area-label { color: var(--ink); }
+
+/* Lines sit under the cards; only their strokes take the pointer, and the
+   wide transparent one is the part that does. */
+.graph-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.graph-edge { cursor: pointer; pointer-events: stroke; outline: none; }
+.graph-edge path { fill: none; }
+.graph-edge .hit { stroke: transparent; stroke-width: 14px; }
+.graph-edge .line {
+  stroke: color-mix(in oklab, var(--provenance) 55%, var(--rule));
+  stroke-width: 1.6px;
+  transition: stroke var(--ease), stroke-width var(--ease);
+}
+.graph-edge.lit .line { stroke: var(--provenance); stroke-width: 2.2px; }
+.graph-edge:hover .line,
+.graph-edge:focus-visible .line { stroke: var(--accent); stroke-width: 2.6px; }
+
+/* Who created whom: a dashed neutral arrow, creator to child, so it never
+   reads as a conversation. It takes the pointer only to show its title. */
+.graph-created { pointer-events: stroke; }
+.graph-created path { fill: none; }
+.graph-created .hit { stroke: transparent; stroke-width: 12px; }
+.graph-created .line {
+  stroke: color-mix(in oklab, var(--ink) 45%, var(--rule));
+  stroke-width: 1.4px;
+  stroke-dasharray: 5 4;
+  transition: stroke var(--ease), stroke-width var(--ease);
+}
+.graph-created.lit .line { stroke: var(--ink); stroke-width: 1.9px; }
+.graph-arrowhead path { fill: color-mix(in oklab, var(--ink) 45%, var(--rule)); }
+.graph-arrowhead.lit path { fill: var(--ink); }
+
+.graph-legend { display: inline-flex; align-items: center; gap: var(--s4); }
+.graph-legend-item { display: inline-flex; align-items: center; gap: var(--s2); white-space: nowrap; }
+.graph-legend svg path { fill: none; }
+.graph-legend .conversation { stroke: color-mix(in oklab, var(--provenance) 55%, var(--rule)); stroke-width: 1.6px; }
+.graph-legend .created { stroke: color-mix(in oklab, var(--ink) 45%, var(--rule)); stroke-width: 1.4px; stroke-dasharray: 5 4; }
+.graph-legend .created-head { fill: color-mix(in oklab, var(--ink) 45%, var(--rule)); }
+
+/* An Agent card: the graph tab places it on the canvas, Home lists it in a
+   Project's grid. Everything but where it sits is the same in both. */
+.agent-card {
+  --pane: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--pane);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 var(--bevel), 0 4px 12px var(--cast);
+  transition: border-color var(--ease), background var(--ease);
+}
+.agent-card:hover { background: var(--active); border-color: color-mix(in oklab, var(--pane) 60%, var(--rule)); border-left-color: var(--pane); }
+/* The Transcript layer's header draws the card's badges, in the card's hue. */
+.layer-badges { --pane: var(--muted); }
+.agent-card[data-provider="claude"],
+.layer-badges[data-provider="claude"] { --pane: var(--h-success); }
+.agent-card[data-provider="codex"],
+.layer-badges[data-provider="codex"] { --pane: var(--h-warning); }
+.agent-card[data-provider="antigravity"],
+.layer-badges[data-provider="antigravity"] { --pane: var(--h-violet); }
+/* An offline Agent is red at a glance, whatever its provider. */
+.agent-card[data-online="offline"] {
+  --pane: var(--critical);
+  border-color: color-mix(in oklab, var(--critical) 55%, transparent);
+  background: color-mix(in oklab, var(--critical) 8%, var(--raised));
+}
+.agent-card-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-card-name.dim { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.agent-card-badges,
+.layer-badges { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.agent-card-meta { font-size: 10.5px; color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-canvas > .agent-card { position: absolute; }
+
+.tag.role { color: var(--provenance); border-color: color-mix(in srgb, var(--provenance) 45%, transparent); }
+
+.graph-foot {
+  flex: none;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s4);
+  padding: var(--s2) var(--s4);
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--rule);
+  background: var(--base);
+}
+.graph-foot .warn { color: var(--warning); }
+
+/* the Agent layer: a transcript or a pair's messages, over the page ------- */
+
+.layer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--well) 72%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4vh 16px;
+}
+.layer {
+  width: min(900px, 100%);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px color-mix(in srgb, #000 55%, transparent);
+  overflow: hidden;
+  outline: none;
+}
+.layer-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule);
+}
+.layer-title { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: var(--s1) var(--s3); }
+.layer-title .layer-sub { flex-basis: 100%; }
+.layer-kind { font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted); }
+.layer-name { font-weight: 600; color: var(--ink-strong); overflow-wrap: anywhere; }
+.layer-name.dim { color: var(--muted); font-family: var(--mono); font-weight: 400; }
+.layer-arrow { color: var(--provenance); }
+.layer-sub { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.layer-close {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.layer-close:hover { color: var(--critical); background: var(--sunken); }
+/* The one way out of the layer that goes somewhere: to the live Window. */
+.layer-go { flex: none; color: var(--accent); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
+.layer-go:hover { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.layer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: var(--s4); overflow-y: auto; }
+.layer-body .chat-area { flex: 1; min-height: 0; display: flex; }
+
+.peer-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.peer-msg {
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--provenance);
+  border-radius: var(--radius);
+  background: var(--sunken);
+  padding: var(--s2) var(--s4);
+}
+.peer-msg.incoming { border-left-color: var(--accent); }
+.peer-msg-head { display: flex; align-items: center; gap: var(--s3); font-size: 11px; color: var(--muted); }
+.peer-dir { color: var(--ink); font-weight: 550; }
+.peer-msg-head .flag { color: var(--muted); }
+.peer-msg-head .when { margin-left: auto; font-family: var(--mono); }
+.tag.peer-state.delivered { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+.tag.peer-state.refused,
+.tag.peer-state.failed { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 45%, transparent); }
+.tag.peer-state.held,
+.tag.peer-state.accepted { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+/* A body is the text one Agent sent another, shown as that text. */
+.peer-body {
+  margin-top: var(--s1);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+.peer-body.gone { font-family: var(--ui); font-size: 11px; font-style: italic; color: var(--muted); }

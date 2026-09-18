@@ -32,6 +32,14 @@ type Backend interface {
 	WindowAgents(ctx context.Context, project, window string) (any, error)
 	Agent(ctx context.Context, agent string) (any, error)
 
+	// AgentGraph and PeerMessages read which Agents exchanged peer messages.
+	// They take no lock and create no file.
+	AgentGraph(ctx context.Context, project string) (any, error)
+	PeerMessages(ctx context.Context, agent, peer string) (any, error)
+
+	// StopProject ends the Project's tmux session the way `stop project` does;
+	// the Project, its Windows and Agents stay registered.
+	StopProject(ctx context.Context, project string, dryRun bool) (any, error)
 	CreateWindow(ctx context.Context, project string, req CreateWindowRequest) (any, error)
 	RenameWindow(ctx context.Context, project, window, name string) (any, error)
 	DeleteWindow(ctx context.Context, project, window string, dryRun bool) (any, error)
@@ -42,6 +50,7 @@ type Backend interface {
 	CreatePane(ctx context.Context, project, window string, req CreatePaneRequest) (any, error)
 	RenameAgent(ctx context.Context, agent, name string) (any, error)
 	ResumeAgent(ctx context.Context, agent string) (any, error)
+	DeleteAgent(ctx context.Context, agent string, dryRun bool) (any, error)
 	Capabilities(ctx context.Context, agent string) (any, error)
 	StartTurn(ctx context.Context, agent, text string) (any, error)
 	SteerTurn(ctx context.Context, agent, text string) (any, error)
@@ -96,6 +105,9 @@ func (s *Server) Handler() http.Handler {
 	read("/api/v1/projects/{project}", func(r *http.Request) (any, error) {
 		return s.backend.Project(r.Context(), r.PathValue("project"))
 	})
+	read("/api/v1/projects/{project}/agent-graph", func(r *http.Request) (any, error) {
+		return s.backend.AgentGraph(r.Context(), r.PathValue("project"))
+	})
 	read("/api/v1/projects/{project}/windows", func(r *http.Request) (any, error) {
 		return s.backend.Windows(r.Context(), r.PathValue("project"))
 	})
@@ -117,6 +129,9 @@ func (s *Server) Handler() http.Handler {
 
 	read("/api/v1/agents/{agent}/capabilities", func(r *http.Request) (any, error) {
 		return s.backend.Capabilities(r.Context(), r.PathValue("agent"))
+	})
+	read("/api/v1/agents/{agent}/peers/{peer}/messages", func(r *http.Request) (any, error) {
+		return s.backend.PeerMessages(r.Context(), r.PathValue("agent"), r.PathValue("peer"))
 	})
 	read("/api/v1/notifications", func(r *http.Request) (any, error) {
 		return s.backend.Notifications(r.Context())
@@ -143,6 +158,17 @@ func (s *Server) Handler() http.Handler {
 	pane := func(r *http.Request) string { return r.PathValue("pane") }
 	agent := func(r *http.Request) string { return r.PathValue("agent") }
 
+	write("POST /api/v1/projects/{project}/stop", http.StatusOK, func(w http.ResponseWriter, r *http.Request) (any, error) {
+		dryRun := r.URL.Query().Get("dryRun") == "true"
+		var req confirmRequest
+		if err := decodeBody(w, r, &req); err != nil {
+			return nil, err
+		}
+		if !dryRun && !req.Confirm {
+			return nil, confirmRequired("stopping a project")
+		}
+		return s.backend.StopProject(r.Context(), project(r), dryRun)
+	})
 	write("POST /api/v1/projects/{project}/windows", http.StatusCreated, func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var req CreateWindowRequest
 		if err := decodeBody(w, r, &req); err != nil {
@@ -221,6 +247,17 @@ func (s *Server) Handler() http.Handler {
 			return nil, err
 		}
 		return s.backend.RenameAgent(r.Context(), agent(r), name)
+	})
+	write("DELETE /api/v1/agents/{agent}", http.StatusOK, func(w http.ResponseWriter, r *http.Request) (any, error) {
+		dryRun := r.URL.Query().Get("dryRun") == "true"
+		var req confirmRequest
+		if err := decodeBody(w, r, &req); err != nil {
+			return nil, err
+		}
+		if !dryRun && !req.Confirm {
+			return nil, confirmRequired("deleting an agent")
+		}
+		return s.backend.DeleteAgent(r.Context(), agent(r), dryRun)
 	})
 	write("POST /api/v1/agents/{agent}/resume", http.StatusOK, func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var req confirmRequest

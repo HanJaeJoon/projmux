@@ -248,3 +248,64 @@ export interface ResumeCandidate {
   turns: number;
   note?: string;
 }
+
+/** Two Agents that sent each other messages; `a` sorts before `b`. */
+export interface AgentConversationEdge {
+  kind: "conversation";
+  a: string;
+  b: string;
+  aToB: number;
+  bToA: number;
+  lastAcceptedAt: string;
+}
+
+/** One Agent (`a`, the creator) created another (`b`). It carries no counts. */
+export interface AgentCreatedEdge {
+  kind: "created";
+  a: string;
+  b: string;
+}
+
+/** A graph edge; a pair can have one of each kind. */
+export type AgentGraphEdge = AgentConversationEdge | AgentCreatedEdge;
+
+/**
+ * Which Agents talked, and which created which, from
+ * `GET /api/v1/projects/{project}/agent-graph`.
+ */
+export interface AgentGraph {
+  project: string;
+  agents: { uid: string; projectUID: string }[];
+  edges: AgentGraphEdge[];
+  omitted: { pairs: number; messages: number; created: number };
+  since: string | null;
+  skipped: number;
+}
+
+export interface PeerMessage {
+  messageRef: string;
+  conversationRef: string;
+  replyTo?: string;
+  direction: "outgoing" | "incoming";
+  source: string;
+  target: string;
+  state: string;
+  acceptedAt: string;
+  payloadBytes: number;
+  bodyRetained: boolean;
+  payload?: string;
+}
+
+/** The messages between two Agents, both ways, oldest first. */
+export interface PeerMessages {
+  agent: string;
+  peer: string;
+  messages: PeerMessage[];
+  since: string | null;
+  skipped: number;
+}
+
+/** What the Agent layer shows: one Agent's transcript, or a pair's messages. */
+export type LayerTarget =
+  | { kind: "agent"; uid: string }
+  | { kind: "pair"; a: string; b: string; edge?: AgentConversationEdge };
