@@ -312,8 +312,10 @@ func TestInstallReplacementDrainIntegration(t *testing.T) {
 
 		// A long-lived member of the fleet, running the image that is about to
 		// be superseded. `--idle-timeout` is long so nothing but the drain can
-		// explain its exit.
-		broker := fleet.start(t, "internal", "codex-broker", "serve", "--idle-timeout", "10m")
+		// explain its exit. Its generation-scoped publication matches managed
+		// Agents; the legacy default discovery path is not the target.
+		broker := fleet.start(t, "internal", "codex-broker", "serve", "--idle-timeout", "10m",
+			"--endpoint-state-domain", "install-test-domain", "--endpoint-generation", "generation-one", "--endpoint-default")
 		waitFor(t, "the broker runtime to publish", 15*time.Second, func() bool {
 			return fleet.brokerSocket(t) != ""
 		})
@@ -368,7 +370,8 @@ func TestInstallReplacementDrainIntegration(t *testing.T) {
 		// one" -- and without it the fleet has no long-lived child at all, which
 		// the `L2` row correctly reports as `no-observed-processes` rather than
 		// as a completed replacement. An empty fleet is not evidence of one.
-		replacement := fleet.start(t, "internal", "codex-broker", "serve", "--idle-timeout", "10m")
+		replacement := fleet.start(t, "internal", "codex-broker", "serve", "--idle-timeout", "10m",
+			"--endpoint-state-domain", "install-test-domain", "--endpoint-generation", "generation-one", "--endpoint-default")
 		waitFor(t, "the replacement runtime to publish", 15*time.Second, func() bool {
 			return fleet.brokerSocket(t) != ""
 		})

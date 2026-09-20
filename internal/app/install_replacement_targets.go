@@ -20,6 +20,10 @@ type installReplacementTarget struct {
 }
 
 func defaultInstallReplacementTargets() []installReplacementTarget {
+	return readInstallReplacementTargets(installReplacementProcessRevision)
+}
+
+func readInstallReplacementTargets(revision func(codexProcessImage) string) []installReplacementTarget {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil
@@ -32,7 +36,7 @@ func defaultInstallReplacementTargets() []installReplacementTarget {
 	if !supported {
 		return nil
 	}
-	return projectInstallReplacementTargets(resolved, os.Getpid(), images, installReplacementProcessRevision)
+	return projectInstallReplacementTargets(resolved, os.Getpid(), images, revision)
 }
 
 func projectInstallReplacementTargets(self string, selfPID int, images []codexProcessImage, revision func(codexProcessImage) string) []installReplacementTarget {

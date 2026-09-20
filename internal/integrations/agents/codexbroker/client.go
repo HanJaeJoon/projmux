@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"slices"
@@ -28,6 +29,33 @@ const (
 	// than handing its consumer a stream with an undetectable hole.
 	remoteBacklog = 64
 )
+
+// DialStage is the closed stage where reaching a runtime failed. It adds no
+// transport text or endpoint identity to the broker's content-free refusals.
+type DialStage string
+
+const (
+	DialStageDiscovery DialStage = "discovery"
+	DialStageDial      DialStage = "dial"
+	DialStageHandshake DialStage = "handshake"
+)
+
+type dialError struct {
+	stage DialStage
+	err   error
+}
+
+func (e *dialError) Error() string { return e.err.Error() }
+func (e *dialError) Unwrap() error { return e.err }
+
+// DialStageOf returns a failed Dial's stage, or empty for other operations.
+func DialStageOf(err error) DialStage {
+	var failed *dialError
+	if errors.As(err, &failed) {
+		return failed.stage
+	}
+	return ""
+}
 
 // DialConfig is the closed input for reaching an already-running runtime.
 type DialConfig struct {
@@ -111,19 +139,19 @@ func dialLifecycleIPC(ctx context.Context, discovery Discovery, protocol Protoco
 
 func dial(ctx context.Context, discovery Discovery, cfg DialConfig, purpose string) (*Conn, error) {
 	if !platformSupported {
-		return nil, refuse(RefusalUnsupportedPlatform, nil)
+		return nil, &dialError{DialStageDiscovery, refuse(RefusalUnsupportedPlatform, nil)}
 	}
 	record, err := readRecord(discovery)
 	if err != nil {
-		return nil, err
+		return nil, &dialError{DialStageDiscovery, err}
 	}
 	path := discovery.SocketPath()
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, refuse(RefusalHostUnavailable, err)
+		return nil, &dialError{DialStageDiscovery, refuse(RefusalHostUnavailable, err)}
 	}
 	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || !ownedByCurrentUser(info) {
-		return nil, refuse(RefusalDiscoveryUntrusted, nil)
+		return nil, &dialError{DialStageDiscovery, refuse(RefusalDiscoveryUntrusted, nil)}
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -132,13 +160,13 @@ func dial(ctx context.Context, discovery Discovery, cfg DialConfig, purpose stri
 	dialer := net.Dialer{Timeout: timeout}
 	netConn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, refuse(RefusalHostUnavailable, err)
+		return nil, &dialError{DialStageDial, refuse(RefusalHostUnavailable, err)}
 	}
 	protocol := cfg.Protocol.normalize()
 	conn, err := handshake(netConn, discovery, record, protocol, timeout, purpose)
 	if err != nil {
 		_ = netConn.Close()
-		return nil, err
+		return nil, &dialError{DialStageHandshake, err}
 	}
 	conn.discovery = discovery
 	go conn.read()
