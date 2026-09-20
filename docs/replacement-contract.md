@@ -404,9 +404,23 @@ absence is stated by this table's `unsupported-platform` row.
 
 `projmux internal install-replace` runs as a step of `make install`, immediately
 before the residue census so the census measures the fleet the pass left. It
-takes the census, splits the residual processes by disposition, dials the
-published broker runtime for this state domain, waits a bounded moment, and
+takes the census, splits the residual processes by disposition, discovers the
+published generation-scoped broker endpoints in this state domain, and dials
+those whose PID hints select this executable's residual processes. PID is only
+a selection hint; the existing ownership and credential checks still authorize
+the connection. The legacy default endpoint key locates the directory and is
+not assumed to be the published runtime. The pass waits a bounded moment and
 writes `install-replacement.json`.
+
+A welcome from a current-image runtime cannot stand in for a residual target.
+A drain/closing refusal confirms reachability; if the exact socket disappears
+during a failed request, its disappearance proves that target is already gone. The runtime writes `drain-required`
+before an idle drain closes its connection. Completion follows the original
+socket identities and ownership-checked runtime IDs captured for accepted
+targets, so an absent unrelated socket or a successor published at the same
+path cannot distort the drained count. Runtime IDs distinguish successors even
+when the filesystem reuses the original socket's inode. An unreadable or
+untrusted successor record alone does not prove completion.
 
 It **starts nothing** — a replacement pass that launched what it was sent to
 replace would leave more behind than it found, so it dials and never ensures.
@@ -424,6 +438,12 @@ the impact and next action. Targets are rechecked after the refusal; a vanished
 or unreadable target is not invented, and an unavailable build revision is
 `unknown`. These identities are transient terminal output only:
 `install-replacement.json` and the residue ledger retain counts and tokens.
+The replacement record adds `failureStage` on an unsuccessful request:
+`discovery` means target selection, record, or socket validation failed;
+`dial` means the local socket connection failed; `handshake` means the greeting
+or response failed or did not accept a drain. `refusal` keeps its existing broker
+token, when one is available. A current-image welcome has no refusal token.
+Successful, pending, no-target, and unsupported records omit `failureStage`.
 The diagnostic states that later Codex Agents may lack control while the old
 broker remains. Let existing work finish, check that the named processes exit
 naturally, and retry `make install`. If they remain, the operator reviews the

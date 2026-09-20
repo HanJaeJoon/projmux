@@ -175,6 +175,17 @@ func readRecord(discovery Discovery) (discoveryRecord, error) {
 	return record, nil
 }
 
+// PublishedRuntimeID reads the runtime identity from an ownership-checked
+// discovery record. It observes publication without dialing or exposing the
+// credential; a caller still uses Dial to authenticate a live connection.
+func PublishedRuntimeID(discovery Discovery) (string, error) {
+	record, err := readRecord(discovery)
+	if err != nil {
+		return "", err
+	}
+	return record.Runtime, nil
+}
+
 // writeRecord publishes one runtime's record atomically at owner-only mode.
 func writeRecord(discovery Discovery, record discoveryRecord) error {
 	payload, err := json.Marshal(record)

@@ -122,13 +122,14 @@ type Host struct {
 	closeOnce   sync.Once
 	sessions    sync.WaitGroup
 
-	mu       sync.Mutex
-	closing  bool
-	draining bool
-	vintaged bool
-	bindings int
-	stats    HostStats
-	timer    *time.Timer
+	mu           sync.Mutex
+	closing      bool
+	draining     bool
+	drainReplies int
+	vintaged     bool
+	bindings     int
+	stats        HostStats
+	timer        *time.Timer
 	// live is every accepted connection this runtime is still serving. A
 	// shutdown closes them explicitly: a session blocked on its socket would
 	// otherwise keep the runtime alive past the moment it decided to stop.
@@ -343,7 +344,7 @@ func (h *Host) armIdle() {
 // idleFired shuts the runtime down if it is still idle when the timer expires.
 func (h *Host) idleFired() {
 	h.mu.Lock()
-	idle := !h.closing && h.bindings == 0
+	idle := !h.closing && h.bindings == 0 && h.drainReplies == 0
 	h.mu.Unlock()
 	if idle {
 		go h.Close()
@@ -372,34 +373,46 @@ func (h *Host) releaseBinding() {
 	}
 	last := h.bindings == 0
 	draining := h.draining
+	replying := h.drainReplies > 0
 	h.mu.Unlock()
 	if !last {
 		return
 	}
 	if draining {
+		if replying {
+			return
+		}
 		go h.Close()
 		return
 	}
 	h.armIdle()
 }
 
-// drain marks the runtime as replaced-in-waiting. Active bindings keep
-// running: an incompatible client is a binary replacement, not a fault, and
-// severing live work to install one would be a worse outcome than waiting.
-func (h *Host) drain() {
+// refuseDrainSession marks the drain before replying, but keeps an idle runtime
+// alive until the refusal has been written. Starting Close first can close this
+// socket before its drain-required frame reaches the caller, turning an accepted
+// drain into an anonymous handshake EOF. The write retains its existing bound.
+func (h *Host) refuseDrainSession(conn net.Conn) {
 	h.mu.Lock()
 	h.draining = true
-	last := h.bindings == 0
+	h.drainReplies++
 	h.mu.Unlock()
-	if last {
-		go h.Close()
-	}
+	defer func() {
+		h.mu.Lock()
+		h.drainReplies--
+		finished := h.bindings == 0 && h.drainReplies == 0
+		h.mu.Unlock()
+		if finished {
+			go h.Close()
+		}
+	}()
+	h.refuseSession(conn, RefusalDrainRequired)
 }
 
-// drainOnVintage enters the drain when this runtime's own image has been
-// replaced on disk, and reports whether the caller must be refused.
+// drainOnVintage detects when this runtime's own image has been replaced on
+// disk. Its caller enters the drain while writing the typed refusal.
 //
-// It is the whole of the vintage trigger. A runtime with no vintage reader is
+// It is the vintage trigger. A runtime with no vintage reader is
 // never drained by it, a runtime that has already answered `true` does not read
 // the link again, and a runtime still on the installed image answers false and
 // serves the session normally.
@@ -416,7 +429,6 @@ func (h *Host) drainOnVintage() bool {
 	h.mu.Lock()
 	h.vintaged = true
 	h.mu.Unlock()
-	h.drain()
 	return true
 }
 
@@ -493,8 +505,7 @@ func (h *Host) authenticate(conn *net.UnixConn, reader *bufio.Reader) (int, stri
 		// A binary this runtime cannot talk to has arrived. Start draining so
 		// the replacement can take over once the work in flight is done, and
 		// tell the caller exactly that instead of failing anonymously.
-		h.drain()
-		h.refuseSession(conn, RefusalDrainRequired)
+		h.refuseDrainSession(conn)
 		return 0, "", false, false
 	}
 	// The second entry condition, and the one an install reaches. A client
@@ -505,7 +516,7 @@ func (h *Host) authenticate(conn *net.UnixConn, reader *bufio.Reader) (int, stri
 	// enters the same drain by the same door -- no new refusal, no new frame,
 	// and live work is still carried to its end rather than severed.
 	if h.drainOnVintage() {
-		h.refuseSession(conn, RefusalDrainRequired)
+		h.refuseDrainSession(conn)
 		return 0, "", false, false
 	}
 	if reason := h.refusingWork(); reason != RefusalNone {
@@ -554,7 +565,7 @@ func (h *Host) lookupSession(id string) *session {
 }
 
 // refuseSession writes one typed refusal and counts it.
-func (h *Host) refuseSession(conn *net.UnixConn, reason Refusal) {
+func (h *Host) refuseSession(conn net.Conn, reason Refusal) {
 	h.countRefusal()
 	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_ = writeFrame(conn, wireReply{Kind: replyRefused, Refusal: reason})

@@ -20,8 +20,9 @@ import (
 type installReplacementFixture struct {
 	vintage projmuxProcessVintage
 	// reached and refusal are what the drain request answers.
-	reached bool
-	refusal string
+	reached      bool
+	refusal      string
+	failureStage string
 	// noRequest makes the pass unable to reach any target at all, which is the
 	// shape a platform with no broker route has.
 	noRequest bool
@@ -55,16 +56,27 @@ func runTestInstallReplacement(t *testing.T, fixture installReplacementFixture) 
 		stateDir:    func() (string, error) { return dir, nil },
 		readVintage: func(time.Time) projmuxProcessVintage { return fixture.vintage },
 		readTargets: func() []installReplacementTarget { return fixture.targets },
-		runtimeGone: func() bool {
-			polls++
-			return fixture.goneAfter >= 0 && polls > fixture.goneAfter
-		},
-		settle: 50 * time.Millisecond,
-		poll:   time.Millisecond,
+		settle:      50 * time.Millisecond,
+		poll:        time.Millisecond,
 	}
 	if !fixture.noRequest {
-		command.requestDrain = func(context.Context) (bool, string) {
-			return fixture.reached, fixture.refusal
+		command.requestDrain = func(context.Context) installReplacementDrainResult {
+			accepted := 0
+			stage := fixture.failureStage
+			if !fixture.reached && stage == "" {
+				stage = "discovery"
+			}
+			if fixture.reached {
+				accepted, _ = replacementResidualByDisposition(fixture.vintage.Roles)
+			}
+			attempted, _ := replacementResidualByDisposition(fixture.vintage.Roles)
+			return installReplacementDrainResult{attempted: attempted, accepted: accepted, refusal: fixture.refusal, failureStage: stage, drained: func() int {
+				polls++
+				if fixture.goneAfter >= 0 && polls > fixture.goneAfter {
+					return accepted
+				}
+				return 0
+			}}
 		}
 	}
 	stderr := fixture.stderr
@@ -146,17 +158,17 @@ func TestInstallReplacementPassOutcomesAreFixedByFleetAndRequest(t *testing.T) {
 		},
 		{
 			name:    "a target the shipped path cannot reach keeps the refusal that says why",
-			fixture: installReplacementFixture{vintage: broker(600), reached: false, refusal: "discovery-untrusted", goneAfter: -1},
+			fixture: installReplacementFixture{vintage: broker(600), reached: false, refusal: "discovery-untrusted", failureStage: "discovery", goneAfter: -1},
 			want: installReplacementOutcome{
 				Outcome: installReplacementOutcomeUnreachable, Supported: true,
-				Attempted: 1, Refusal: "discovery-untrusted",
+				Attempted: 1, Refusal: "discovery-untrusted", FailureStage: "discovery",
 			},
 		},
 		{
 			name:    "no request route at all is unreachable rather than complete",
 			fixture: installReplacementFixture{vintage: broker(600), noRequest: true, goneAfter: 0},
 			want: installReplacementOutcome{
-				Outcome: installReplacementOutcomeUnreachable, Supported: true, Attempted: 1,
+				Outcome: installReplacementOutcomeUnreachable, Supported: true, Attempted: 1, FailureStage: "discovery",
 			},
 		},
 		{
@@ -291,7 +303,7 @@ func TestInstallReplacementNoticeSpeaksOnlyWhenAnActionFollows(t *testing.T) {
 	// The original summary stays identity-free; failure details carry identities
 	// separately and never alter the persisted record.
 	text := renderInstallReplacementNotice(installReplacementOutcome{
-		Outcome: installReplacementOutcomeUnreachable, Attempted: 1, Refusal: "discovery-untrusted",
+		Outcome: installReplacementOutcomeUnreachable, Attempted: 1, Refusal: "discovery-untrusted", FailureStage: "discovery",
 	})
 	for _, forbidden := range []string{"/", "pid", "argv"} {
 		if strings.Contains(text, forbidden) {

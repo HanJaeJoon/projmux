@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -122,6 +123,8 @@ type installReplacementOutcome struct {
 	// `replacement-target-unreachable` are verdicts, and only this says which
 	// door was closed.
 	Refusal string `json:"refusal,omitempty"`
+	// FailureStage distinguishes discovery, socket dial, and handshake failures.
+	FailureStage string `json:"failureStage,omitempty"`
 }
 
 // installReplacementCommand is the hidden `internal install-replace` route.
@@ -138,17 +141,11 @@ type installReplacementCommand struct {
 	// Process identities never enter the persisted outcome or residue census.
 	readTargets func() []installReplacementTarget
 	locale      i18n.Locale
-	// requestDrain asks one live broker runtime to stand down and reports
-	// whether a live runtime answered at all, plus the refusal that closed the
-	// request. A nil reader makes the pass a census with no request, which is
-	// what an unsupported platform gets.
-	requestDrain func(ctx context.Context) (reached bool, refusal string)
-	// runtimeGone reports that no broker runtime is published any more. It is
-	// how the settle wait proves a drain finished without asking the runtime
-	// to describe itself while it is closing.
-	runtimeGone func() bool
-	settle      time.Duration
-	poll        time.Duration
+	// requestDrain captures the published targets and returns a counter that
+	// observes only those exact sockets, even if a successor is published.
+	requestDrain func(ctx context.Context) installReplacementDrainResult
+	settle       time.Duration
+	poll         time.Duration
 }
 
 func newInstallReplacementCommand() *installReplacementCommand {
@@ -169,7 +166,6 @@ func newInstallReplacementCommand() *installReplacementCommand {
 		poll:        installReplacementPoll,
 	}
 	command.requestDrain = defaultInstallReplacementDrainRequest
-	command.runtimeGone = defaultInstallReplacementRuntimeGone
 	return command
 }
 
@@ -240,43 +236,63 @@ type installReplacementExitError struct{}
 func (installReplacementExitError) Error() string { return installReplacementOutcomeUnreachable }
 func (installReplacementExitError) ExitCode() int { return 1 }
 
-// replace makes the one request this pass is allowed to make and watches for
-// the answer.
+// replace asks the exact residual targets for this pass and watches for
+// their answers.
 func (c *installReplacementCommand) replace(outcome *installReplacementOutcome) {
 	if outcome.Attempted == 0 {
 		outcome.Outcome = installReplacementOutcomeNoTarget
 		return
 	}
 	if c.requestDrain == nil {
+		outcome.FailureStage = string(codexbroker.DialStageDiscovery)
 		outcome.Outcome = installReplacementOutcomeUnreachable
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), installReplacementDialTimeout)
 	defer cancel()
-	reached, refusal := c.requestDrain(ctx)
-	outcome.Refusal = refusal
-	if !reached {
-		// No live runtime answered the shipped path. The census counted a
-		// residual broker process, so something is running an old image and
-		// this pass cannot reach it: an unpublished runtime, a foreign-owned
-		// artifact, a socket that outlived its host. Which one is on the
-		// refusal, and none of them is a process this pass may end.
+	result := c.requestDrain(ctx)
+	// The target snapshot used for selection is fresher than the role census.
+	// A target may have exited between them; counts must follow the same exact
+	// snapshot the request used, never turn that normal absence into failure.
+	outcome.Attempted = result.attempted
+	if result.attempted == 0 && result.failureStage == "" {
+		outcome.Outcome = installReplacementOutcomeNoTarget
+		return
+	}
+	outcome.Refusal = result.refusal
+	outcome.FailureStage = result.failureStage
+	outcome.Drained = c.settleDrained(result)
+	if result.accepted < outcome.Attempted || result.failureStage != "" {
+		// A welcome from another, current runtime is not an accepted drain,
+		// and fewer published targets cannot stand in for the whole census.
+		if outcome.FailureStage == "" {
+			outcome.FailureStage = string(codexbroker.DialStageDiscovery)
+			outcome.Refusal = string(codexbroker.RefusalHostUnavailable)
+		}
 		outcome.Outcome = installReplacementOutcomeUnreachable
 		return
 	}
-	if c.settleUntilGone() {
-		outcome.Drained = outcome.Attempted
+	if outcome.Drained == outcome.Attempted {
 		outcome.Outcome = installReplacementOutcomeComplete
 		return
 	}
 	outcome.Outcome = installReplacementOutcomePending
 }
 
-// settleUntilGone waits the bounded settle window for the runtime to close, and
-// reports whether it did.
-func (c *installReplacementCommand) settleUntilGone() bool {
-	if c.runtimeGone == nil {
-		return false
+type installReplacementDrainResult struct {
+	attempted    int
+	accepted     int
+	refusal      string
+	failureStage string
+	// drained observes the socket identities captured before the requests.
+	drained func() int
+}
+
+// settleDrained counts only accepted targets that have disappeared. A successor
+// at the same path neither hides completion nor gets counted as a drained host.
+func (c *installReplacementCommand) settleDrained(result installReplacementDrainResult) int {
+	if result.drained == nil || result.accepted == 0 {
+		return 0
 	}
 	poll := c.poll
 	if poll <= 0 {
@@ -284,11 +300,9 @@ func (c *installReplacementCommand) settleUntilGone() bool {
 	}
 	deadline := time.Now().Add(c.settle)
 	for {
-		if c.runtimeGone() {
-			return true
-		}
-		if !time.Now().Before(deadline) {
-			return false
+		drained := result.drained()
+		if drained == result.accepted || !time.Now().Before(deadline) {
+			return drained
 		}
 		time.Sleep(poll)
 	}
@@ -392,59 +406,148 @@ func pluralizeInstallReplacementSubject(count int) string {
 	return "they are"
 }
 
-// defaultInstallReplacementDrainRequest makes the drain request against the
-// broker runtime published for this process's own state domain.
-//
-// It dials and never launches. `Dial` refuses when discovery finds no published
-// runtime, which is exactly the answer this pass wants: a runtime that is not
-// there needs no replacement, and one this pass started would be a residual
-// process of its own making.
-//
-// A refused dial is not a failure here. The vintage trigger inside the runtime
-// answers a compatible client with `drain-required`, so that refusal is the
-// request being accepted, and it is reported as reached.
-func defaultInstallReplacementDrainRequest(ctx context.Context) (bool, string) {
-	discovery, err := defaultInstallReplacementDiscovery()
-	if err != nil {
-		return false, string(codexbroker.RefusalOf(err))
+// defaultInstallReplacementDrainRequest discovers the generation-scoped
+// endpoints already published in this state domain. The legacy default key is
+// a directory locator, not the key a managed Agent's broker publishes.
+func defaultInstallReplacementDrainRequest(ctx context.Context) installReplacementDrainResult {
+	residual := readInstallReplacementTargets(nil)
+	if len(residual) == 0 {
+		return installReplacementDrainResult{}
 	}
-	conn, err := codexbroker.Dial(ctx, discovery, codexbroker.DialConfig{Timeout: installReplacementDialTimeout})
-	if err == nil {
-		// A live runtime that welcomed this build is a runtime whose own image
-		// is still the installed one. The census counted a residual broker
-		// elsewhere, so this connection is not it; closing without a request
-		// is the whole of what this pass may do about that.
-		_ = conn.Close()
-		return true, string(codexbroker.RefusalNone)
-	}
-	refusal := codexbroker.RefusalOf(err)
-	if refusal == codexbroker.RefusalDrainRequired || refusal == codexbroker.RefusalHostClosed {
-		return true, string(refusal)
-	}
-	return false, string(refusal)
-}
-
-// defaultInstallReplacementRuntimeGone reports that no runtime is published for
-// this process's state domain any more.
-//
-// It is a discovery read rather than a dial, so it never re-enters the drain it
-// is watching.
-func defaultInstallReplacementRuntimeGone() bool {
-	discovery, err := defaultInstallReplacementDiscovery()
-	if err != nil {
-		return false
-	}
-	info, err := os.Lstat(discovery.SocketPath())
-	if err != nil {
-		return true
-	}
-	return info.Mode()&os.ModeSocket == 0
-}
-
-func defaultInstallReplacementDiscovery() (codexbroker.Discovery, error) {
 	domain, err := codexBrokerStateDomain(os.Getenv, os.UserHomeDir)
 	if err != nil {
-		return codexbroker.Discovery{}, err
+		return installReplacementDrainResult{attempted: len(residual), refusal: string(codexbroker.RefusalDomainRequired), failureStage: string(codexbroker.DialStageDiscovery)}
 	}
-	return codexBrokerDiscoveryForEndpoint(domain, codexbroker.DefaultEndpointKey)
+	return requestInstallReplacementDrain(ctx, domain, residual)
+}
+
+func requestInstallReplacementDrain(ctx context.Context, domain string, residual []installReplacementTarget) installReplacementDrainResult {
+	result := installReplacementDrainResult{attempted: len(residual)}
+	if len(residual) == 0 {
+		return result
+	}
+	published, refusal := codexBrokerPublishedRuntimes(domain)
+	fail := func(stage, reason string) {
+		if result.failureStage == "" {
+			result.failureStage, result.refusal = stage, reason
+		}
+	}
+	if refusal != "" || len(published) == 0 {
+		if refusal == "" {
+			refusal = string(codexbroker.RefusalHostUnavailable)
+		}
+		fail(string(codexbroker.DialStageDiscovery), refusal)
+		return result
+	}
+	// PID only selects records that describe this executable's residual fleet.
+	// It grants no authority: Dial still proves ownership and authenticates the
+	// record's endpoint and credential, and completion uses the socket inode.
+	wanted := make(map[int]bool, len(residual))
+	for _, target := range residual {
+		wanted[target.pid] = true
+	}
+	var targets []installReplacementSocket
+	welcomed := false
+	for _, discovery := range published {
+		pid := installReplacementRecordPID(discovery.RecordPath())
+		if !wanted[pid] {
+			continue
+		}
+		delete(wanted, pid)
+		runtimeID, err := codexbroker.PublishedRuntimeID(discovery)
+		if err != nil {
+			fail(string(codexbroker.DialStageDiscovery), string(codexbroker.RefusalOf(err)))
+			continue
+		}
+		info, err := os.Lstat(discovery.SocketPath())
+		if err != nil {
+			fail(string(codexbroker.DialStageDiscovery), string(codexbroker.RefusalHostUnavailable))
+			continue
+		}
+		target := installReplacementSocket{path: discovery.SocketPath(), info: info, discovery: discovery, runtime: runtimeID}
+		conn, err := codexbroker.Dial(ctx, discovery, codexbroker.DialConfig{Timeout: installReplacementDialTimeout})
+		if err == nil {
+			_ = conn.Close()
+			// A welcome proves a current image answered; it does not mean the
+			// residual process counted by the install accepted a drain.
+			welcomed = true
+			continue
+		}
+		reason := codexbroker.RefusalOf(err)
+		if reason != codexbroker.RefusalDrainRequired && reason != codexbroker.RefusalHostClosed && !target.gone() {
+			fail(string(codexbroker.DialStageOf(err)), string(reason))
+			continue
+		}
+		targets = append(targets, target)
+		if result.failureStage == "" && (reason == codexbroker.RefusalDrainRequired || reason == codexbroker.RefusalHostClosed) {
+			result.refusal = string(reason)
+		}
+	}
+	result.accepted = len(targets)
+	if result.accepted < len(residual) && result.failureStage == "" {
+		if welcomed {
+			fail(string(codexbroker.DialStageHandshake), "")
+		} else {
+			fail(string(codexbroker.DialStageDiscovery), string(codexbroker.RefusalHostUnavailable))
+		}
+	}
+	result.drained = func() int {
+		count := 0
+		for _, target := range targets {
+			if target.gone() {
+				count++
+			}
+		}
+		return count
+	}
+	return result
+}
+
+// Socket identities stay in memory. A path alone would confuse an old runtime
+// with its successor, and a missing unrelated/default path proves nothing.
+type installReplacementSocket struct {
+	path      string
+	info      os.FileInfo
+	discovery codexbroker.Discovery
+	runtime   string
+}
+
+func (target installReplacementSocket) gone() bool {
+	latest, err := os.Lstat(target.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return err == nil && target.superseded(latest)
+}
+
+// An unlinked socket's inode can be immediately reused by its successor on
+// ext4. SameFile alone would then wait for the new runtime to exit. Compare the
+// ownership-checked publication as well, without dialing that new runtime.
+// Missing, malformed, or untrusted records do not prove a successor exists.
+func (target installReplacementSocket) superseded(latest os.FileInfo) bool {
+	if !os.SameFile(target.info, latest) {
+		return true
+	}
+	runtimeID, err := codexbroker.PublishedRuntimeID(target.discovery)
+	return err == nil && target.runtime != "" && runtimeID != target.runtime
+}
+
+// This bounded selection hint never supplies credentials or runtime authority.
+func installReplacementRecordPID(path string) int {
+	file, err := os.Open(path) // #nosec G304 -- path is a published record under this state domain.
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	payload, err := io.ReadAll(io.LimitReader(file, codexBrokerRecordLimit+1))
+	if err != nil || len(payload) > codexBrokerRecordLimit {
+		return 0
+	}
+	var record struct {
+		PID int `json:"pid"`
+	}
+	if json.Unmarshal(payload, &record) != nil {
+		return 0
+	}
+	return record.PID
 }
