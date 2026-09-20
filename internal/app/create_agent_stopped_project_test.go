@@ -191,3 +191,71 @@ func TestCreateAgentLeavesAnExistingPrimaryWindowRefAlone(t *testing.T) {
 		})
 	}
 }
+
+// Acceptance: a create that still cannot prepare the Project refuses with the
+// cause and the next action, and writes nothing. The revival above removes the
+// refusal that named an invariant the operator never touched; these two remain
+// on purpose, and each one names what is wrong and what to do about it.
+func TestCreateAgentRefusalsOnAnUnpreparableProjectNameTheCauseAndTheNextAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		projectUID string
+		argv       []string
+		wantCause  string
+		wantAction string
+	}{
+		{
+			// A root that is gone cannot be created around: the Project has to be
+			// rebound before anything is allocated under it.
+			name:       "missing root",
+			projectUID: "prj-gone",
+			argv:       []string{"--window", "revived", "--create-window"},
+			wantCause:  "carries a MissingRoot condition for \"/srv/gone\"",
+			wantAction: "rebind it before creating resources",
+		},
+		{
+			// Without --create-window there is no Window to create and no primary
+			// Window to fall back to, so the operator is told both ways out.
+			name:       "primary window asked for on a Project that owns none",
+			projectUID: "prj-beta",
+			argv:       []string{"--primary-window"},
+			wantCause:  "has no spec.primaryWindowRef",
+			wantAction: "create a Window first or name one with --window <ref>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := newFakeResourceStore(t)
+			tmux := newFakeTmux()
+			stopAndEmptyProject(t, store, tmux, tt.projectUID)
+			command, _ := newTestAgentCreateCommand(t, store, tmux)
+			registryBefore, tmuxBefore := store.snapshot(), tmux.state()
+
+			argv := append([]string{"agent", "--provider", "codex", "--interactive-only",
+				"--project", "uid:" + tt.projectUID}, tt.argv...)
+			stdout, stderr, err := runRoute(t, command, argv...)
+			if err == nil || !IsUsageError(err) {
+				t.Fatalf("create = stdout=%q stderr=%q err=%v, want an actionable usage refusal", stdout, stderr, err)
+			}
+			if !strings.Contains(err.Error(), tt.wantCause) {
+				t.Errorf("refusal %q does not name the cause %q", err.Error(), tt.wantCause)
+			}
+			if !strings.Contains(err.Error(), tt.wantAction) {
+				t.Errorf("refusal %q does not name the next action %q", err.Error(), tt.wantAction)
+			}
+			if stdout != "" || stderr != "" {
+				t.Errorf("refusal emitted stdout=%q stderr=%q, want a silent non-zero exit", stdout, stderr)
+			}
+			if store.writes != 0 || store.snapshot() != registryBefore {
+				t.Errorf("refusal changed the Registry: writes=%d changed=%t", store.writes, store.snapshot() != registryBefore)
+			}
+			if writes := tmuxMutationCallCount(tmux); writes != 0 || tmux.state() != tmuxBefore {
+				t.Errorf("refusal changed tmux: writes=%d changed=%t", writes, tmux.state() != tmuxBefore)
+			}
+		})
+	}
+}
