@@ -654,9 +654,11 @@ const (
 )
 
 // codexTurnPushOutcome is one native control attempt classified into the public
-// coordination vocabulary.
+// coordination vocabulary. steer is set only for a legacy start refusal that
+// proves the thread is busy and no write occurred.
 type codexTurnPushOutcome struct {
 	delivered bool
+	steer     bool
 	reason    string
 	unknown   bool
 	err       error
@@ -678,11 +680,23 @@ func classifyCodexTurnPush(operation string, response agentControlResponse, call
 		return codexTurnPushOutcome{reason: codexPushUnknownReason, unknown: true, err: callErr}
 	}
 	if err := response.Error(); err != nil {
-		if operation == agentControlOpDeliver && slices.Contains([]string{
-			"stale-epoch", "stale-binding", "unavailable", "no-active-turn",
-			"turn-state-unavailable", "lifecycle-retry", "lifecycle-busy", "invalid-operation",
-		}, response.Code) {
-			return codexTurnPushOutcome{reason: codexPushRefusedReason, err: err}
+		switch operation {
+		case agentControlOpStart:
+			switch response.Code {
+			case "turn-in-progress":
+				return codexTurnPushOutcome{steer: true, reason: codexPushRefusedReason, err: err}
+			case "stale-epoch", "stale-binding", "unavailable", "stale-turn", "turn-state-unavailable",
+				"lifecycle-retry", "lifecycle-busy", "invalid-operation":
+				return codexTurnPushOutcome{reason: codexPushRefusedReason, err: err}
+			}
+		case agentControlOpDeliver, agentControlOpSteer:
+			switch response.Code {
+			case "stale-epoch", "stale-binding", "unavailable", "no-active-turn", "turn-state-unavailable",
+				"lifecycle-retry", "lifecycle-busy", "invalid-operation":
+				return codexTurnPushOutcome{reason: codexPushRefusedReason, err: err}
+			}
+			// Unlike start's pre-write stale-turn, deliver and steer can return
+			// this code after SteerExactTurn, so their outcome stays unknown.
 		}
 		// turn-start-failed, steer stale-turn, timeout, protocol-error, and every
 		// unrecognised code fail closed as ambiguous.
@@ -719,6 +733,16 @@ func (c *agentCommand) pushCodexCoordination(record messagestore.Record, target 
 	}
 	response, callErr := c.callControl(binding, agentControlRequest{Operation: agentControlOpDeliver, Text: text})
 	outcome := classifyCodexTurnPush(agentControlOpDeliver, response, callErr)
+	if callErr == nil && !response.OK && response.Code == "invalid-operation" {
+		// An older observer rejects the operation before any provider write.
+		// Try its legacy path once; no other refusal or error permits a retry.
+		response, callErr = c.callControl(binding, agentControlRequest{Operation: agentControlOpStart, Text: text})
+		outcome = classifyCodexTurnPush(agentControlOpStart, response, callErr)
+		if outcome.steer {
+			response, callErr = c.callControl(binding, agentControlRequest{Operation: agentControlOpSteer, Text: text})
+			outcome = classifyCodexTurnPush(agentControlOpSteer, response, callErr)
+		}
+	}
 	if !outcome.delivered {
 		return c.terminalCoordination(record, coremessage.EventFail, outcome.reason, outcome.unknown, outcome.err)
 	}
