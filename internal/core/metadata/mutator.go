@@ -313,7 +313,39 @@ func (m Mutator) addWindowTx(txn *Transaction, reg *Registry, op string, ownerKi
 	stored, _ := reg.Window(windowUID)
 	stored.Spec.AnchorPaneRef = panes[0].Metadata.UID
 	stored.Spec.DefaultShellPaneRef = panes[0].Metadata.UID
+	reg.adoptProjectPrimaryWindow(ownerKind, ownerUID, windowUID)
 	return stored.Clone(), panes, nil
+}
+
+// adoptProjectPrimaryWindow gives a Project its missing primary Window when a
+// Project-owned Window is added and the ref is empty.
+//
+// Validate states the rule as a pair: a Project that owns Windows has to name
+// one of them in spec.primaryWindowRef. Registration fills the ref because it
+// declares the whole topology itself, and deleting the primary hands the ref to
+// a surviving sibling -- but deleting a Project's last Window empties the ref by
+// design, so the very next Window added under that Project has to reclaim it or
+// the registry the caller just wrote is one Validate rejects. That rejection is
+// what a stopped, zero-Window Project's first `create agent --create-window`
+// hit: the Window was allocated, the whole operation then failed validation, and
+// the message named an invariant the operator never touched.
+//
+// Adoption is strictly a repair of an empty ref and never re-points a Project
+// that already names a primary Window, so an existing Project's Window creation
+// and target selection keep their current meaning.
+func (r *Registry) adoptProjectPrimaryWindow(ownerKind Kind, ownerUID, windowUID string) {
+	if ownerKind != KindProject {
+		return
+	}
+	for i := range r.Projects {
+		if r.Projects[i].Metadata.UID != ownerUID {
+			continue
+		}
+		if strings.TrimSpace(r.Projects[i].Spec.PrimaryWindowRef) == "" {
+			r.Projects[i].Spec.PrimaryWindowRef = windowUID
+		}
+		return
+	}
 }
 
 func (m Mutator) addPaneTx(txn *Transaction, reg *Registry, op, ownerUID string, ownerKind Kind, role PaneRole, explicitName, command, cwd string, labels map[string]string, now time.Time) (Pane, error) {

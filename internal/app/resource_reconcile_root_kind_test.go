@@ -229,6 +229,11 @@ var rootKindProjectionSites = []rootKindProjectionSite{
 		Why: "identity lookup, one function per root kind; a control session's identity is its exact tmux session name",
 	},
 	{
+		File: "internal/core/metadata/mutator.go", Func: "Registry.adoptProjectPrimaryWindow",
+		Source: "Registry", Verdict: rootKindProjectOnly,
+		Why: "fills an empty spec.primaryWindowRef when a Project gains its first Window; a ControlSession owns Windows but has no primary Window ref to fill",
+	},
+	{
 		File: "internal/core/metadata/mutator.go", Func: "Mutator.ObserveProjectRoots",
 		Source: "Registry", Verdict: rootKindProjectOnly,
 		Why: "stats spec.root to maintain the MissingRoot condition; there is no control-root path to stat",
@@ -432,14 +437,14 @@ func TestRootKindProjectionSweepTableIsPrintable(t *testing.T) {
 	for verdict, want := range map[rootKindVerdict]int{
 		rootKindBoth:        19,
 		rootKindPaired:      2,
-		rootKindProjectOnly: 24,
+		rootKindProjectOnly: 25,
 		rootKindGap:         0,
 	} {
 		if counts[verdict] != want {
 			t.Errorf("%s rows = %d, want %d; update the count with the table and say why in the commit", verdict, counts[verdict], want)
 		}
 	}
-	if got, want := len(rootKindProjectionSites), 45; got != want {
+	if got, want := len(rootKindProjectionSites), 46; got != want {
 		t.Errorf("sweep rows = %d, want %d", got, want)
 	}
 	for _, want := range []string{"SITE", "SOURCE", "KIND HANDLING", "NOTE"} {

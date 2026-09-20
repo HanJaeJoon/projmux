@@ -1476,6 +1476,17 @@ func (c *createCommand) materializeWindow(
 	sessionName string,
 	work *windowWork,
 ) error {
+	// A Project whose runtime this operation just created adopts its first
+	// stored Window onto the session's mandatory initial tmux window
+	// (ensureProjectRuntime -> adoptInitialWindow). On a Project that owned no
+	// Window at all, that first Window is the one this operation allocated a
+	// moment earlier, so creating a second tmux window for it would leave two
+	// tmux windows mirroring one stable UID with the adopted one stranded. The
+	// adopted runtime already is this Window's materialization, so bind the
+	// allocated initial Pane to it instead of creating anything.
+	if owner, adopted := ledger.currentWindow(work.window.Metadata.UID); adopted {
+		return c.bindAdoptedWindow(ctx, working, mutator, work, owner)
+	}
 	launch := c.runtime.supervisedLaunch(ctx, work.activation, work.payload)
 	created, err := c.runtime.newWindow(ctx, sessionName, work.window.Metadata.Name, project.Spec.Root, launch)
 	if created.WindowID == "" {
@@ -1508,6 +1519,43 @@ func (c *createCommand) materializeWindow(
 	}
 	observeActivationRuntime(working, mutator, work.activation, work.initialPaneID, c.runtime.warn)
 	return err
+}
+
+// bindAdoptedWindow finishes materialization for an allocated Window the new
+// Project session already adopted. The tmux window and its pane carry this
+// Window's and Pane's mirrors already; what is still missing is the live pane
+// handle the rest of the create route reads.
+//
+// The adopted tmux window is the session's own first window, which tmux always
+// opens with a plain login shell. A Window adopted this way therefore never
+// runs a stored command, exactly as an adopted pre-existing first Window does
+// not; that is the adoption trade-off, not a new one.
+func (c *createCommand) bindAdoptedWindow(
+	ctx context.Context,
+	working *coremetadata.Registry,
+	mutator coremetadata.Mutator,
+	work *windowWork,
+	owner runtimeOwner,
+) error {
+	if projected, ok := working.Window(work.window.Metadata.UID); ok {
+		work.window = *projected
+	}
+	panes, err := c.runtime.panesOf(ctx, owner.WindowID)
+	if err != nil {
+		return err
+	}
+	for _, row := range panes {
+		if row[0] != work.initial.Metadata.UID {
+			continue
+		}
+		work.initialPaneID = row[1]
+		observeActivationRuntime(working, mutator, work.activation, work.initialPaneID, c.runtime.warn)
+		return nil
+	}
+	return fmt.Errorf(
+		"create: window/%s was adopted onto tmux window %s, which has no live binding for its initial pane/%s; "+
+			"stop the Project and retry the same create",
+		work.window.Metadata.Name, owner.WindowID, work.initial.Metadata.Name)
 }
 
 // ensureAnchorPane returns the live tmux pane id of the preflighted anchor,
