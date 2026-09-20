@@ -552,6 +552,7 @@ Codex coordination delivery chooses start or steer inside one native control
 operation from one lifecycle snapshot. If that read returns `lifecycle-retry`,
 it waits through the fixed retry window and reads once more before any write;
 no provider write is ever retried.
+An older observer that refuses this operation with `invalid-operation` gets one legacy start attempt, followed by steer only for `turn-in-progress`.
 
 Approval review shows only the safe one-shot intersection supplied by the
 exact pending request. Command, file, and network requests are limited to

@@ -321,14 +321,17 @@ func TestAgentMessageSendCodexTargetTerminalFailureExitsNonzeroUnderTheSameJudgm
 
 func TestClassifyCodexTurnPushNeverReturnsUndeliveredWithoutCause(t *testing.T) {
 	codes := []string{"turn-in-progress", "stale-epoch", "stale-binding", "unavailable", "stale-turn", "turn-state-unavailable",
-		"invalid-operation", "no-active-turn", "turn-start-failed", "timeout", "protocol-error", "fixture-unrecognised-code", ""}
-	for _, operation := range []string{agentControlOpDeliver} {
+		"lifecycle-retry", "lifecycle-busy", "invalid-operation", "no-active-turn", "turn-start-failed", "timeout", "protocol-error", "fixture-unrecognised-code", ""}
+	for _, operation := range []string{agentControlOpDeliver, agentControlOpStart, agentControlOpSteer} {
 		responses := map[string]agentControlResponse{"zero response": {}}
 		for _, code := range codes {
 			responses["code "+code] = refusal(code)
 		}
 		for name, response := range responses {
 			outcome := classifyCodexTurnPush(operation, response, nil)
+			if outcome.steer != (operation == agentControlOpStart && response.Code == "turn-in-progress") {
+				t.Errorf("%s %s outcome = %+v, want steer only for start's turn-in-progress refusal", operation, name, outcome)
+			}
 			if outcome.delivered || outcome.err == nil ||
 				(outcome.reason != codexPushRefusedReason && outcome.reason != codexPushUnknownReason) ||
 				outcome.unknown != (outcome.reason == codexPushUnknownReason) {
