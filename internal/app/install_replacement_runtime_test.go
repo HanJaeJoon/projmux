@@ -180,3 +180,66 @@ func TestInstallReplacementReconcilesTargetsThatExitAfterCensus(t *testing.T) {
 		t.Fatalf("vanished target = %+v stderr=%q", outcome, stderr.String())
 	}
 }
+
+func TestInstallReplacementUsesRuntimeIdentityWhenSocketInodeIsReused(t *testing.T) {
+	t.Parallel()
+	domain := newBrokerStateDomain(t)
+	original, discovery := startInstallDrainHost(t, domain, "generation-one", 101, false)
+	info, err := os.Lstat(discovery.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := installReplacementSocket{path: discovery.SocketPath(), info: info, discovery: discovery, runtime: original.RuntimeID()}
+	if target.superseded(info) {
+		t.Fatal("original live runtime was reported gone")
+	}
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	successor, _ := startInstallDrainHost(t, domain, "generation-one", 102, false)
+	// Model inode reuse explicitly by supplying the original metadata. The
+	// publication and runtime IDs are from real hosts; only filesystem reuse
+	// is modeled, so this regression is deterministic on tmpfs and ext4 alike.
+	if !target.superseded(info) {
+		t.Fatal("successor runtime with reused socket metadata concealed completion")
+	}
+	if successor.Stats().Draining {
+		t.Fatal("completion observation drained the successor")
+	}
+	select {
+	case <-successor.Done():
+		t.Fatal("completion observation closed the successor")
+	default:
+	}
+
+	body, err := os.ReadFile(discovery.RecordPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []struct {
+		name     string
+		contents []byte
+		mode     os.FileMode
+	}{
+		{"malformed", []byte("not-json"), 0o600},
+		{"untrusted", body, 0o666},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			if err := os.WriteFile(discovery.RecordPath(), invalid.contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(discovery.RecordPath(), invalid.mode); err != nil {
+				t.Fatal(err)
+			}
+			if target.superseded(info) {
+				t.Fatal("invalid successor record proved completion")
+			}
+		})
+	}
+	if err := os.Remove(discovery.RecordPath()); err != nil {
+		t.Fatal(err)
+	}
+	if target.superseded(info) {
+		t.Fatal("missing record alone proved completion")
+	}
+}

@@ -416,8 +416,11 @@ A welcome from a current-image runtime cannot stand in for a residual target.
 A drain/closing refusal confirms reachability; if the exact socket disappears
 during a failed request, its disappearance proves that target is already gone. The runtime writes `drain-required`
 before an idle drain closes its connection. Completion follows the original
-socket identities captured for accepted targets, so an absent unrelated socket
-or a successor published at the same path cannot distort the drained count.
+socket identities and ownership-checked runtime IDs captured for accepted
+targets, so an absent unrelated socket or a successor published at the same
+path cannot distort the drained count. Runtime IDs distinguish successors even
+when the filesystem reuses the original socket's inode. An unreadable or
+untrusted successor record alone does not prove completion.
 
 It **starts nothing** — a replacement pass that launched what it was sent to
 replace would leave more behind than it found, so it dials and never ensures.

@@ -454,12 +454,17 @@ func requestInstallReplacementDrain(ctx context.Context, domain string, residual
 			continue
 		}
 		delete(wanted, pid)
+		runtimeID, err := codexbroker.PublishedRuntimeID(discovery)
+		if err != nil {
+			fail(string(codexbroker.DialStageDiscovery), string(codexbroker.RefusalOf(err)))
+			continue
+		}
 		info, err := os.Lstat(discovery.SocketPath())
 		if err != nil {
 			fail(string(codexbroker.DialStageDiscovery), string(codexbroker.RefusalHostUnavailable))
 			continue
 		}
-		target := installReplacementSocket{path: discovery.SocketPath(), info: info}
+		target := installReplacementSocket{path: discovery.SocketPath(), info: info, discovery: discovery, runtime: runtimeID}
 		conn, err := codexbroker.Dial(ctx, discovery, codexbroker.DialConfig{Timeout: installReplacementDialTimeout})
 		if err == nil {
 			_ = conn.Close()
@@ -501,13 +506,30 @@ func requestInstallReplacementDrain(ctx context.Context, domain string, residual
 // Socket identities stay in memory. A path alone would confuse an old runtime
 // with its successor, and a missing unrelated/default path proves nothing.
 type installReplacementSocket struct {
-	path string
-	info os.FileInfo
+	path      string
+	info      os.FileInfo
+	discovery codexbroker.Discovery
+	runtime   string
 }
 
 func (target installReplacementSocket) gone() bool {
 	latest, err := os.Lstat(target.path)
-	return errors.Is(err, os.ErrNotExist) || err == nil && !os.SameFile(target.info, latest)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return err == nil && target.superseded(latest)
+}
+
+// An unlinked socket's inode can be immediately reused by its successor on
+// ext4. SameFile alone would then wait for the new runtime to exit. Compare the
+// ownership-checked publication as well, without dialing that new runtime.
+// Missing, malformed, or untrusted records do not prove a successor exists.
+func (target installReplacementSocket) superseded(latest os.FileInfo) bool {
+	if !os.SameFile(target.info, latest) {
+		return true
+	}
+	runtimeID, err := codexbroker.PublishedRuntimeID(target.discovery)
+	return err == nil && target.runtime != "" && runtimeID != target.runtime
 }
 
 // This bounded selection hint never supplies credentials or runtime authority.
