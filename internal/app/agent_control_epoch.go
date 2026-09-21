@@ -130,6 +130,14 @@ const (
 	lifecycleDrainRefusedReason = "an install drain refused the fresh exact turn state read"
 )
 
+// The three writes that make a fresh lifecycle read first, named as the
+// refusal lines name them.
+const (
+	agentControlWriteStart   = "new turn write"
+	agentControlWriteSteer   = "steer write"
+	agentControlWriteDeliver = "turn write"
+)
+
 // lifecycleReadRefusal folds a lifecycle read error into the closed token the
 // caller reports and the words that say why the read did not happen. The
 // admission refusals and a drain are told apart here rather than at the three
@@ -145,6 +153,60 @@ func lifecycleReadRefusal(err error) (string, string, bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// drainedWriteRefusal is the drain refusal a write returns when the state this
+// epoch already tracks cannot carry it. Losing the read is not a reason to
+// assert a state that was never confirmed, so the line names the drain rather
+// than the turn state it could not check.
+func drainedWriteRefusal(write string) agentControlResponse {
+	return refusedControl(string(codexbroker.RefusalDrainRequired), lifecycleDrainRefusedReason+"; "+write+" refused")
+}
+
+// freshTurnState is what one write site acts on after its fresh lifecycle read.
+type freshTurnState struct {
+	// snapshot is the served lifecycle state, empty unless the read succeeded.
+	snapshot codexappserver.LifecycleSnapshot
+	// drained marks the one refusal that does not by itself stop the write. A
+	// drain refuses the read because the read opens its own connection and so
+	// meets the handshake drain gate; the binding underneath it is untouched
+	// and keeps carrying turn writes. Cutting control here would sever what the
+	// broker deliberately kept, so the site falls back to the lifecycle state
+	// this epoch already tracks and refuses only if that cannot carry the write.
+	drained bool
+	// refusal is what the site must return when the read neither served a
+	// usable snapshot nor met a drain.
+	refusal *agentControlResponse
+}
+
+// reconcile folds a served snapshot into the epoch. A drained read has no
+// snapshot to fold, and the tracked state stands as it is.
+func (s freshTurnState) reconcile(e *codexControlEpoch) {
+	if !s.drained {
+		e.reconcileTurn(s.snapshot)
+	}
+}
+
+// readTurnState makes the fresh lifecycle read one write needs and classifies
+// the result. write names that write in any refusal line.
+func (e *codexControlEpoch) readTurnState(ctx context.Context, write string) freshTurnState {
+	snapshot, err := e.wire.ReadLifecycleSnapshot(ctx, e.identity.ThreadID)
+	return e.classifyTurnState(snapshot, err, write)
+}
+
+func (e *codexControlEpoch) classifyTurnState(snapshot codexappserver.LifecycleSnapshot, err error, write string) freshTurnState {
+	if codexbroker.RefusalOf(err) == codexbroker.RefusalDrainRequired {
+		return freshTurnState{drained: true}
+	}
+	if code, reason, ok := lifecycleReadRefusal(err); ok {
+		refusal := refusedControl(code, reason+"; "+write+" refused")
+		return freshTurnState{refusal: &refusal}
+	}
+	if err != nil || snapshot.ThreadID != e.identity.ThreadID || !validFreshStartSnapshot(snapshot) {
+		refusal := refusedControl("turn-state-unavailable", "fresh exact turn state is unavailable; "+write+" refused")
+		return freshTurnState{refusal: &refusal}
+	}
+	return freshTurnState{snapshot: snapshot}
 }
 
 func (e *codexControlEpoch) Revoke() {
@@ -241,22 +303,22 @@ func (e *codexControlEpoch) Handle(ctx context.Context, request agentControlRequ
 		if strings.TrimSpace(request.Text) == "" {
 			return refusedControl("stale-turn", "thread is not idle; new turn write refused")
 		}
-		snapshot, err := e.wire.ReadLifecycleSnapshot(ctx, e.identity.ThreadID)
-		if code, reason, ok := lifecycleReadRefusal(err); ok {
-			return refusedControl(code, reason+"; new turn write refused")
-		}
-		if err != nil || snapshot.ThreadID != e.identity.ThreadID || !validFreshStartSnapshot(snapshot) {
-			return refusedControl("turn-state-unavailable", "fresh exact turn state is unavailable; new turn write refused")
+		state := e.readTurnState(ctx, agentControlWriteStart)
+		if state.refusal != nil {
+			return *state.refusal
 		}
 		// The snapshot request travels through the same connection/control epoch,
 		// but the Registry binding can still be replaced while that read is in
 		// flight. Re-check the existing binding fence before accepting either its
-		// state or a provider mutation.
+		// state or a provider mutation. A drain took the read, never the fence.
 		if !e.current(e.identity) {
 			return refusedControl("stale-binding", "exact Agent binding or activation generation changed")
 		}
-		e.reconcileTurn(snapshot)
+		state.reconcile(e)
 		if !e.canStart() {
+			if state.drained {
+				return drainedWriteRefusal(agentControlWriteStart)
+			}
 			return refusedControl("turn-in-progress", "exact thread already has a turn in progress")
 		}
 		result, err := e.wire.StartExactTurn(ctx, e.identity.ThreadID, request.Text)
@@ -278,12 +340,9 @@ func (e *codexControlEpoch) Handle(ctx context.Context, request agentControlRequ
 			return refusedControl("no-active-turn", "no exact active turn is available to steer")
 		}
 		expectedTurnID := e.turnID
-		snapshot, err := e.wire.ReadLifecycleSnapshot(ctx, e.identity.ThreadID)
-		if code, reason, ok := lifecycleReadRefusal(err); ok {
-			return refusedControl(code, reason+"; steer write refused")
-		}
-		if err != nil || snapshot.ThreadID != e.identity.ThreadID || !validFreshStartSnapshot(snapshot) {
-			return refusedControl("turn-state-unavailable", "fresh exact turn state is unavailable; steer write refused")
+		state := e.readTurnState(ctx, agentControlWriteSteer)
+		if state.refusal != nil {
+			return *state.refusal
 		}
 		// The lifecycle read is content-free and travels through the same exact
 		// connection epoch. Re-check the Agent/Pane/runtime/generation/thread
@@ -293,8 +352,16 @@ func (e *codexControlEpoch) Handle(ctx context.Context, request agentControlRequ
 		if !e.current(e.identity) {
 			return refusedControl("turn-state-unavailable", "fresh exact turn state is unavailable; steer write refused")
 		}
-		e.reconcileTurn(snapshot)
+		state.reconcile(e)
 		if e.turnID != expectedTurnID || !e.canMutateCurrentTurn() {
+			// This site checks the tracked state once before the read too, so
+			// today a drain never arrives here: nothing between the two checks
+			// can change the answer. The branch is kept because that ordering
+			// is the only reason, and a reordering must not silently turn an
+			// unconfirmed state into a claim that no turn is active.
+			if state.drained {
+				return drainedWriteRefusal(agentControlWriteSteer)
+			}
 			return refusedControl("no-active-turn", "no exact active turn is available to steer")
 		}
 		result, err := e.wire.SteerExactTurn(ctx, e.identity.ThreadID, expectedTurnID, request.Text)
@@ -342,16 +409,14 @@ func (e *codexControlEpoch) deliver(ctx context.Context, request agentControlReq
 		}
 		snapshot, err = e.wire.ReadLifecycleSnapshot(ctx, e.identity.ThreadID)
 	}
-	if code, reason, ok := lifecycleReadRefusal(err); ok {
-		return refusedControl(code, reason+"; turn write refused")
-	}
-	if err != nil || snapshot.ThreadID != e.identity.ThreadID || !validFreshStartSnapshot(snapshot) {
-		return refusedControl("turn-state-unavailable", "fresh exact turn state is unavailable; turn write refused")
+	state := e.classifyTurnState(snapshot, err, agentControlWriteDeliver)
+	if state.refusal != nil {
+		return *state.refusal
 	}
 	if !e.current(e.identity) {
 		return refusedControl("stale-binding", "exact Agent binding or activation generation changed")
 	}
-	e.reconcileTurn(snapshot)
+	state.reconcile(e)
 	if e.canStart() {
 		result, writeErr := e.wire.StartExactTurn(ctx, e.identity.ThreadID, request.Text)
 		if writeErr != nil {
@@ -366,9 +431,12 @@ func (e *codexControlEpoch) deliver(ctx context.Context, request agentControlReq
 		return agentControlResponse{OK: true, ThreadID: result.ThreadID, TurnID: result.TurnID}
 	}
 	if !e.canMutateCurrentTurn() {
+		if state.drained {
+			return drainedWriteRefusal(agentControlWriteDeliver)
+		}
 		return refusedControl("no-active-turn", "no exact active turn is available to steer")
 	}
-	expectedTurnID := snapshot.TurnID
+	expectedTurnID := e.turnID
 	result, writeErr := e.wire.SteerExactTurn(ctx, e.identity.ThreadID, expectedTurnID, request.Text)
 	if writeErr != nil {
 		return controlWireFailure("stale-turn", writeErr)

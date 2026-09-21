@@ -493,3 +493,29 @@ func TestInstallReplacementDrainRequestReadsARefusedDialAsAcceptance(t *testing.
 		t.Fatalf("dialing an empty state domain created %d entries, want none", len(entries))
 	}
 }
+
+// TestInstallReplacementImpactSpeaksOnlyOfAgentsCreatedAfterward is C-2
+// Failure.Detection. The failure notice tells an operator what a remaining old
+// broker costs, and C-2 narrowed that cost: a thread already bound to the old
+// broker keeps its control through the drain, and only an Agent created
+// afterward may find none.
+//
+// The line already scoped itself to Agents "created afterward", so C-2 changed
+// no wording here. This pins that scope in both catalogs, so a later
+// broadening has to come back and re-check the claim against C-2 instead of
+// quietly making the notice false.
+func TestInstallReplacementImpactSpeaksOnlyOfAgentsCreatedAfterward(t *testing.T) {
+	t.Parallel()
+	targets := []installReplacementTarget{{role: codexControlPlaneRoleBroker, pid: 4321, revision: "8ae6e563"}}
+	for _, test := range []struct {
+		locale i18n.Locale
+		scope  string
+	}{
+		{i18n.FallbackLocale, "Codex Agents created afterward may have no control"},
+		{i18n.Locale("ko-KR"), "이후 생성된 Codex Agent의 제어가 불가능할 수 있습니다"},
+	} {
+		if rendered := renderInstallReplacementFailure(targets, test.locale); !strings.Contains(rendered, test.scope) {
+			t.Errorf("%s impact line lost the scope %q: %s", test.locale, test.scope, rendered)
+		}
+	}
+}
