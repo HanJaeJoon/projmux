@@ -646,7 +646,7 @@ command = "projmux ai ingest codex-hook"
 	if byID["codex-hooks"].TestedVersion != "codex-cli 0.130.0" {
 		t.Fatalf("codex hooks TestedVersion = %q", byID["codex-hooks"].TestedVersion)
 	}
-	if byID["claude-hooks"].TestedVersion != "Claude Code 2.1.140" {
+	if byID["claude-hooks"].TestedVersion != "Claude Code 2.1.278" {
 		t.Fatalf("claude hooks TestedVersion = %q", byID["claude-hooks"].TestedVersion)
 	}
 	if byID["antigravity-hooks"].ProviderID != "antigravity" || byID["antigravity-hooks"].InstallCommand != "projmux agent integrate antigravity" || byID["antigravity-hooks"].RemoveCommand != "projmux agent integrate antigravity --remove" || byID["antigravity-hooks"].DryRunCommand != "projmux agent integrate antigravity --dry-run" {

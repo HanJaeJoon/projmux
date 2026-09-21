@@ -1,6 +1,6 @@
 {
   "provider": "claude",
-  "observed_version": "Claude Code 2.1.140",
+  "observed_version": "Claude Code 2.1.278",
   "events": [
     { "name": "PreToolUse", "install": true, "action": "quiet" },
     { "name": "PostToolUse", "install": true, "action": "quiet" },
@@ -17,6 +17,8 @@
     { "name": "SubagentStop", "install": true, "action": "quiet" },
     { "name": "PreCompact", "install": true, "action": "quiet" },
     { "name": "PostCompact", "install": true, "action": "quiet" },
+    { "name": "PreModelSwitch", "install": true, "action": "quiet" },
+    { "name": "PostModelSwitch", "install": true, "action": "quiet" },
     { "name": "SessionEnd", "install": true, "action": "quiet" },
     { "name": "PermissionRequest", "install": true, "action": "notify" },
     { "name": "Setup", "install": true, "action": "quiet" },

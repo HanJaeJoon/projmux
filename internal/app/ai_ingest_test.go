@@ -816,10 +816,10 @@ func TestClaudeTranscriptReaderReturnsLastAssistantText(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := readClaudeTranscriptLastAssistantText(path); got != "last assistant" {
-		t.Fatalf("readClaudeTranscriptLastAssistantText() = %q", got)
+	if got, _ := readClaudeTranscriptLastAssistant(path); got != "last assistant" {
+		t.Fatalf("readClaudeTranscriptLastAssistant() text = %q", got)
 	}
-	if got := readClaudeTranscriptLastAssistantText(filepath.Join(t.TempDir(), "missing.jsonl")); got != "" {
+	if got, _ := readClaudeTranscriptLastAssistant(filepath.Join(t.TempDir(), "missing.jsonl")); got != "" {
 		t.Fatalf("missing transcript text = %q, want empty fallback", got)
 	}
 }

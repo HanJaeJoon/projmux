@@ -106,7 +106,7 @@ func classifyAIHookKind(provider diagnostics.Provider, event string) diagnostics
 			return diagnostics.AIKindNotification
 		case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch":
 			return diagnostics.AIKindTool
-		case "SessionStart", "SessionEnd":
+		case "SessionStart", "SessionEnd", "PreModelSwitch", "PostModelSwitch":
 			return diagnostics.AIKindSession
 		case "PreCompact", "PostCompact":
 			return diagnostics.AIKindCompact

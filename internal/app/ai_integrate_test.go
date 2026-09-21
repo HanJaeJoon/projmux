@@ -750,8 +750,8 @@ func TestAIIntegrateClaudeInstallsManagedHooks(t *testing.T) {
 		t.Fatalf("theme = %#v, want preserved dark", got)
 	}
 	claudeHookEvents := defaultAIHookInstallEvents(aiHookProviderClaude)
-	if len(claudeHookEvents) != 29 {
-		t.Fatalf("default Claude hook catalog has %d events, want 29", len(claudeHookEvents))
+	if len(claudeHookEvents) != 31 {
+		t.Fatalf("default Claude hook catalog has %d events, want 31", len(claudeHookEvents))
 	}
 	for _, event := range claudeHookEvents {
 		if !claudeSettingsHasManagedCommand(t, settings, event) {

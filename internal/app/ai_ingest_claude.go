@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/crevissepartners/projmux/internal/app/usagecmd"
+	"github.com/crevissepartners/projmux/internal/config"
 	"github.com/crevissepartners/projmux/internal/core/notify"
+	"github.com/crevissepartners/projmux/internal/core/usage/runtimemodel"
 )
 
 const claudeTranscriptTailLimit = 256 * 1024
@@ -31,6 +35,14 @@ type claudeHookPayload struct {
 	TeammateName     string
 	TeammateID       string
 	TeammateContext  string
+	// RuntimeModel is the `model` identifier a SessionStart payload may carry
+	// (`claude-opus-5`); Claude Code omits it after /clear and on some
+	// recoveries. FromRuntimeModel/ToRuntimeModel are PreModelSwitch and
+	// PostModelSwitch's `from_model`/`to_model`. They are the provider's own
+	// model, not the projmux usage "model" (the provider key).
+	RuntimeModel     string
+	FromRuntimeModel string
+	ToRuntimeModel   string
 }
 
 func (c *aiCommand) ingestClaudeHook(data []byte, explicitPane string) error {
@@ -62,6 +74,14 @@ func (c *aiCommand) ingestClaudeHook(data []byte, explicitPane string) error {
 			c.appendAIIngestLog(claudeHookLogEntry(paneID, payload, "error", aiIngestFailureReason(aiIngestReasonReadinessWriteFailed, err)))
 			return err
 		}
+		c.persistClaudeRuntimeModel(paneID, payload, payload.RuntimeModel, payload.EventName)
+		c.quietClaudeHook(paneID, payload, aiIngestRecordReason(aiHookNoHandlerReason(action)))
+		return nil
+	case "PostModelSwitch":
+		// The only event that follows the model through a session: /model,
+		// an automatic fallback (source "auto") and a resume (source
+		// "resume") all land here with the new identifier in to_model.
+		c.persistClaudeRuntimeModel(paneID, payload, payload.ToRuntimeModel, payload.EventName)
 		c.quietClaudeHook(paneID, payload, aiIngestRecordReason(aiHookNoHandlerReason(action)))
 		return nil
 	case "UserPromptSubmit":
@@ -78,7 +98,7 @@ func (c *aiCommand) ingestClaudeHook(data []byte, explicitPane string) error {
 		return c.ingestClaudeSubagentStop(paneID, payload, metadata, action)
 	case "PostToolUse", "PostToolUseFailure", "PermissionDenied", "ElicitationResult":
 		return c.ingestClaudeOperatorDialogClosed(paneID, payload, metadata, action, binding, owned)
-	case "PreToolUse", "PostToolBatch", "UserPromptExpansion", "SubagentStart", "PreCompact", "PostCompact", "SessionEnd", "Setup", "TaskCreated", "TaskCompleted", "Elicitation", "ConfigChange", "InstructionsLoaded", "WorktreeCreate", "WorktreeRemove", "CwdChanged", "FileChanged":
+	case "PreToolUse", "PostToolBatch", "UserPromptExpansion", "SubagentStart", "PreCompact", "PostCompact", "SessionEnd", "Setup", "TaskCreated", "TaskCompleted", "Elicitation", "ConfigChange", "InstructionsLoaded", "WorktreeCreate", "WorktreeRemove", "CwdChanged", "FileChanged", "PreModelSwitch":
 		c.quietClaudeHook(paneID, payload, aiIngestRecordReason(aiHookNoHandlerReason(action)))
 		return nil
 	case "TeammateIdle":
@@ -166,7 +186,11 @@ func (c *aiCommand) ingestClaudeStop(paneID string, payload claudeHookPayload, m
 		c.quietClaudeHook(paneID, payload, aiIngestRecordReason(aiHookQuietReason(action)))
 		return nil
 	}
-	message := readClaudeTranscriptLastAssistantText(payload.TranscriptPath)
+	message, transcriptModel := readClaudeTranscriptLastAssistant(payload.TranscriptPath)
+	// The Stop payload itself carries no model, but the transcript tail this
+	// handler already reads records `message.model` on every assistant turn.
+	// It covers the SessionStart payloads Claude Code ships without `model`.
+	c.persistClaudeRuntimeModel(paneID, payload, transcriptModel, claudeRuntimeModelSourceTranscript)
 	body := formatClaudeStopNotifyBody(message)
 	return c.emitClaudeHookStatus(paneID, payload, action, attentionNotifyInput{
 		ID:        claudeStopNotifyID(payload),
@@ -266,6 +290,64 @@ func claudeHookLogEntry(paneID string, payload claudeHookPayload, result string,
 	return aiIngestLogEntry{Source: "claude-hook", Event: payload.EventName, Result: result, Reason: reason, Pane: paneID, CWD: payload.CWD, SessionID: payload.SessionID}
 }
 
+// claudeRuntimeModelSourceTranscript is the sidecar Source for a model read
+// from the transcript tail rather than from a hook payload field.
+const claudeRuntimeModelSourceTranscript = "transcript"
+
+// persistClaudeRuntimeModel records the runtime model a Claude hook reported
+// into the usage state directory, so the ambient usage HUD can print it after
+// the `Claude` label. Best-effort in the sense PR #486 established for the
+// Antigravity context sidecar: an empty identifier writes nothing (an earlier
+// observation must survive a SessionStart that omitted `model`), and a
+// resolution or write failure is swallowed because usage is a side channel of
+// hook ingest, never a reason to fail the hook. With several Claude panes the
+// newest observation wins regardless of pane; the sidecar keeps one record.
+func (c *aiCommand) persistClaudeRuntimeModel(paneID string, payload claudeHookPayload, model, source string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	stateDir, err := c.usageStateDir()
+	if err != nil {
+		return
+	}
+	_ = runtimemodel.Write(stateDir, runtimemodel.Record{
+		Provider:   aiModeClaude,
+		Model:      model,
+		Source:     source,
+		SessionID:  strings.TrimSpace(payload.SessionID),
+		PaneID:     paneID,
+		ObservedAt: c.now().UTC(),
+	})
+}
+
+// usageStateDir resolves the directory the usage snapshot cache and the
+// runtime model sidecar live in. It mirrors usagecmd.Command.resolveStateDir
+// so the ingest writer and the HUD reader agree even when
+// PROJMUX_USAGE_STATE_DIR redirects the cache to a synced location.
+func (c *aiCommand) usageStateDir() (string, error) {
+	if override := strings.TrimSpace(c.env(usagecmd.StateDirEnvVar)); override != "" {
+		return override, nil
+	}
+	homeDir := c.homeDir
+	if homeDir == nil {
+		homeDir = os.UserHomeDir
+	}
+	home, err := homeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	paths, err := config.Homes{
+		HomeDir:    home,
+		ConfigHome: c.env("XDG_CONFIG_HOME"),
+		StateHome:  c.env("XDG_STATE_HOME"),
+	}.Paths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(paths.StateDir, "usage"), nil
+}
+
 // quietClaudeHook only records the quiet outcome. Every caller is reached from
 // ingestClaudeHook, which already marked the Pane before dispatching.
 func (c *aiCommand) quietClaudeHook(paneID string, payload claudeHookPayload, reason aiIngestReason) {
@@ -294,6 +376,9 @@ func parseClaudeHookPayload(data []byte) (claudeHookPayload, error) {
 		TeammateName:     firstString(raw, "teammate_name", "teammateName", "teammate"),
 		TeammateID:       firstString(raw, "teammate_id", "teammateId"),
 		TeammateContext:  firstString(raw, "teammate_context", "teammateContext", "context", "reason", "message"),
+		RuntimeModel:     firstString(raw, "model"),
+		FromRuntimeModel: firstString(raw, "from_model"),
+		ToRuntimeModel:   firstString(raw, "to_model"),
 	}
 	if payload.CWD == "" {
 		payload.CWD = firstNestedString(raw["workspace"], "cwd", "path")
@@ -363,6 +448,9 @@ func (p claudeHookPayload) claudeMetadata() map[string]string {
 		"teammate_name":     p.TeammateName,
 		"teammate_id":       p.TeammateID,
 		"teammate_context":  truncateRunes(p.TeammateContext, 160),
+		"model":             truncateRunes(p.RuntimeModel, 80),
+		"from_model":        truncateRunes(p.FromRuntimeModel, 80),
+		"to_model":          truncateRunes(p.ToRuntimeModel, 80),
 	}
 	for key, value := range p.ToolInput {
 		if text := stringFromAny(value); text != "" {
@@ -425,24 +513,30 @@ func claudeExtraNotifyID(p claudeHookPayload, kind string, values ...string) str
 	return strings.Join(parts, ":")
 }
 
-func readClaudeTranscriptLastAssistantText(path string) string {
+// readClaudeTranscriptLastAssistant reads the transcript tail (at most
+// claudeTranscriptTailLimit bytes) and returns the newest assistant text and
+// the newest assistant `message.model` identifier. The two are searched
+// independently: a trailing assistant line with a model but no text (a tool
+// call) still yields the model, and vice versa. Both are "" when the
+// transcript is unreadable.
+func readClaudeTranscriptLastAssistant(path string) (text, model string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return ""
+		return "", ""
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	size := info.Size()
 	if size <= 0 {
-		return ""
+		return "", ""
 	}
 	start := int64(0)
 	if size > claudeTranscriptTailLimit {
@@ -450,30 +544,38 @@ func readClaudeTranscriptLastAssistantText(path string) string {
 	}
 	buf := make([]byte, size-start)
 	if _, err := file.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
-		return ""
+		return "", ""
 	}
 	lines := strings.Split(strings.TrimSpace(string(buf)), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if text := claudeAssistantTextFromJSONLine(lines[i]); text != "" {
-			return text
+	for i := len(lines) - 1; i >= 0 && (text == "" || model == ""); i-- {
+		lineText, lineModel := claudeAssistantFromJSONLine(lines[i])
+		if text == "" {
+			text = lineText
+		}
+		if model == "" {
+			model = lineModel
 		}
 	}
-	return ""
+	return text, model
 }
 
-func claudeAssistantTextFromJSONLine(line string) string {
+// claudeAssistantFromJSONLine returns the assistant text and the
+// `message.model` identifier of one transcript line, or "" for each when the
+// line is not an assistant entry. Only an assistant entry's model counts: user
+// and system lines never name the model that will answer them.
+func claudeAssistantFromJSONLine(line string) (text, model string) {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
-		return ""
+		return "", ""
 	}
 	if strings.EqualFold(stringFromAny(raw["role"]), "assistant") {
-		return claudeContentText(raw["content"])
+		return claudeContentText(raw["content"]), strings.TrimSpace(stringFromAny(raw["model"]))
 	}
 	message := mapFromAny(raw["message"])
 	if strings.EqualFold(stringFromAny(message["role"]), "assistant") {
-		return claudeContentText(message["content"])
+		return claudeContentText(message["content"]), strings.TrimSpace(stringFromAny(message["model"]))
 	}
-	return ""
+	return "", ""
 }
 
 func claudeContentText(value any) string {

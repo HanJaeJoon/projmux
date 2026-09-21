@@ -488,8 +488,9 @@ including unmanaged projmux ingest command conflicts and the relevant
 
 `projmux internal agent-hook ingest claude-hook` is the conservative core ingest path for
 Claude Code hooks. It reads a single JSON payload from stdin. The embedded
-default install catalog is based on Claude Code 2.1.140 and represents the
-29 hook events visible in that version:
+default install catalog is based on Claude Code 2.1.278 and represents the
+31 hook events projmux handles in that version (the 29 events of 2.1.140 plus
+`PreModelSwitch` and `PostModelSwitch`):
 
 | Event | Behavior |
 | --- | --- |
@@ -501,13 +502,15 @@ default install catalog is based on Claude Code 2.1.140 and represents the
 | `Notification` | pushes a Claude notify row for response-ready, approval-required, or input-ready based on `notification_type` |
 | `UserPromptSubmit` | marks the matched pane hook-active and sets AI state to thinking/busy; no notify queue entry is pushed |
 | `UserPromptExpansion` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
-| `SessionStart` | marks the matched pane hook-active and writes a quiet ingest diagnostic; for an exact managed initial-task binding it records `pending` startup readiness and opens the separately bounded acknowledgement window, but never acknowledges the task; no notify queue entry is pushed |
-| `Stop` | pushes a Claude completion row, using the last assistant transcript text when `transcript_path` is readable |
+| `SessionStart` | marks the matched pane hook-active and writes a quiet ingest diagnostic; for an exact managed initial-task binding it records `pending` startup readiness and opens the separately bounded acknowledgement window, but never acknowledges the task; when the payload carries `model`, records it as the Claude runtime model for the usage HUD; no notify queue entry is pushed |
+| `Stop` | pushes a Claude completion row, using the last assistant transcript text when `transcript_path` is readable; the same transcript tail's newest assistant `message.model` is recorded as the Claude runtime model for the usage HUD |
 | `StopFailure` | pushes a critical Claude error row with error type/message metadata when present |
 | `SubagentStart` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
 | `SubagentStop` | marks the pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
 | `PreCompact` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
 | `PostCompact` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
+| `PreModelSwitch` | marks the matched pane hook-active and writes a quiet ingest diagnostic; the switch can still be blocked, so nothing is recorded; no notify queue entry is pushed |
+| `PostModelSwitch` | marks the matched pane hook-active, records `to_model` as the Claude runtime model for the usage HUD (covers `/model`, automatic fallback `source: auto`, and `source: resume`), and writes a quiet ingest diagnostic; no notify queue entry is pushed |
 | `SessionEnd` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
 | `PermissionRequest` | pushes a critical approval row with the tool name and a concise tool input summary |
 | `Setup` | marks the matched pane hook-active and writes a quiet ingest diagnostic; no notify queue entry is pushed |
@@ -561,6 +564,16 @@ upstream schemas settle:
 | `StopFailure` | `error_type`, `errorType`, `failure_type`, `failureType`; `error_message`, `errorMessage`, `message`, `reason`; nested `error.type`, `error.name`, `error.code`, `error.message`, `error.text`, `error.reason` |
 | `SubagentStop` | `subagent_type`, `subagentType`, `agent_type`, `agentType`; `subagent_id`, `subagentId`, `agent_id`, `agentId`; nested `subagent.type`, `subagent.name`, `subagent.kind`, `subagent.id`, `subagent.subagent_id`, `subagent.agent_id` |
 | `TeammateIdle` | `teammate_name`, `teammateName`, `teammate`; `teammate_id`, `teammateId`; `teammate_context`, `teammateContext`, `context`, `reason`, `message`; nested `teammate.name`, `teammate.type`, `teammate.kind`, `teammate.id`, `teammate.teammate_id`, `teammate.context`, `teammate.status`, `teammate.reason`, `teammate.message` |
+| `SessionStart` | `model` (optional; Claude Code omits it after `/clear` and on some recoveries, and 2.1.278 was observed omitting it on `source: startup`) |
+| `PreModelSwitch`, `PostModelSwitch` | `from_model`, `to_model` (model identifiers such as `claude-opus-5`, never display names); `requested_model`, `source`, and the cache fields are ignored |
+
+The runtime model reaches the status bar through a best-effort sidecar,
+`runtime-model-claude.json`, written next to `snapshots.json` in the usage state
+directory (`PROJMUX_USAGE_STATE_DIR` is honoured). It is the only data these two
+events produce: no notify row, no state change, no `settings.json` key beyond
+the `hooks` entries `projmux agent integrate claude` already manages, and no
+statusLine. See [usage-tracking.md](usage-tracking.md#claude-runtime-model)
+and [statusbar.md](statusbar.md#runtime-model-name).
 
 `projmux agent integrate claude` manages user-level Claude Code hook settings in
 `~/.claude/settings.json`. Claude Code hooks are configured under the top-level

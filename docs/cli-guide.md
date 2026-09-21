@@ -1937,11 +1937,12 @@ do not dispatch OS desktop notifications, `PROJMUX_NOTIFY_HOOK`, or
 `[hooks.send-noti]`.
 
 `ingest claude-hook` is the hook-facing entrypoint for Claude Code hooks. It
-reads one JSON payload from stdin and handles the default Claude Code 2.1.140
+reads one JSON payload from stdin and handles the default Claude Code 2.1.278
 hook catalog: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
 `PostToolBatch`, `PermissionDenied`, `Notification`, `UserPromptSubmit`,
 `UserPromptExpansion`, `SessionStart`, `Stop`, `StopFailure`,
-`SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`, `SessionEnd`,
+`SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+`PreModelSwitch`, `PostModelSwitch`, `SessionEnd`,
 `PermissionRequest`, `Setup`, `TeammateIdle`, `TaskCreated`,
 `TaskCompleted`, `Elicitation`, `ElicitationResult`, `ConfigChange`,
 `InstructionsLoaded`, `WorktreeCreate`, `WorktreeRemove`, `CwdChanged`, and
@@ -2067,7 +2068,7 @@ Claude Code hook ingest is available through `ingest claude-hook`, but
 `integrate claude` is the opt-in user-level wiring command for
 `~/.claude/settings.json`. It installs command hooks for every event whose
 effective Claude hook catalog entry has `"install": true`. The embedded default
-catalog is based on Claude Code 2.1.140 and lives at
+catalog is based on Claude Code 2.1.278 and lives at
 `internal/app/ai_hook_catalogs/claude.json`; a local override may be placed at
 `${XDG_CONFIG_HOME:-$HOME/.config}/projmux/ai-hooks.d/claude.json` to disable
 or add events before projmux itself is released:
@@ -2082,15 +2083,17 @@ or add events before projmux itself is released:
 }
 ```
 
-The embedded Claude catalog contains all 29 Claude Code 2.1.140 events:
+The embedded Claude catalog contains 31 Claude Code 2.1.278 events:
 `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`,
 `PermissionDenied`, `Notification`, `UserPromptSubmit`,
 `UserPromptExpansion`, `SessionStart`, `Stop`, `StopFailure`,
-`SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`, `SessionEnd`,
+`SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+`PreModelSwitch`, `PostModelSwitch`, `SessionEnd`,
 `PermissionRequest`, `Setup`, `TeammateIdle`, `TaskCreated`,
 `TaskCompleted`, `Elicitation`, `ElicitationResult`, `ConfigChange`,
 `InstructionsLoaded`, `WorktreeCreate`, `WorktreeRemove`, `CwdChanged`, and
-`FileChanged`. `SubagentStop` remains quiet/log-only.
+`FileChanged`. `SubagentStop` remains quiet/log-only; `PostModelSwitch` is
+quiet too and only records the Claude runtime model for the usage HUD.
 
 The managed command receives Claude's hook JSON on stdin, keeps stdout/stderr
 quiet, and exits successfully even if ingest fails so it does not block Claude
