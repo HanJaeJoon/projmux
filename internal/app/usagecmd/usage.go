@@ -24,6 +24,7 @@ import (
 	"github.com/crevissepartners/projmux/internal/core/usage"
 	claudeadapter "github.com/crevissepartners/projmux/internal/core/usage/adapters/claude"
 	codexadapter "github.com/crevissepartners/projmux/internal/core/usage/adapters/codex"
+	"github.com/crevissepartners/projmux/internal/core/usage/runtimemodel"
 	"github.com/crevissepartners/projmux/internal/diagnostics"
 	"github.com/crevissepartners/projmux/internal/theme"
 	intrender "github.com/crevissepartners/projmux/internal/ui/render"
@@ -61,6 +62,16 @@ type HUDWindowCapability struct {
 	DefaultVisibility config.StatusbarVisibility
 }
 
+// HUDRuntimeModelCapability is a provider's optional runtime model row: the
+// model identifier the provider itself reported through its official hook
+// events (`claude-opus-5`), rendered after the provider label. It is NOT the
+// usage "model" (the provider key); see internal/core/usage/runtimemodel.
+type HUDRuntimeModelCapability struct {
+	Key               string
+	Label             string
+	DefaultVisibility config.StatusbarVisibility
+}
+
 // HUDProviderCapability is the Settings/render contract for one provider.
 // Providers are returned in aiprovider.UsageSupported declared order.
 type HUDProviderCapability struct {
@@ -68,12 +79,21 @@ type HUDProviderCapability struct {
 	Model       string
 	DisplayName string
 	Windows     []HUDWindowCapability
+	// RuntimeModel is nil for a provider whose hooks never report one.
+	RuntimeModel *HUDRuntimeModelCapability
 }
 
 type hudVisibilityPreferences struct {
 	providers map[string]bool
 	windows   map[string]map[usage.Window]bool
+	// runtimeModels is keyed like providers; a missing key reads as hidden.
+	runtimeModels map[string]bool
 }
+
+// hudRuntimeModelMaxRunes bounds the runtime model text the HUD prints. The
+// identifier is data from a provider payload, so it is escaped and truncated
+// like an opaque quota bucket id rather than mapped to a display alias.
+const hudRuntimeModelMaxRunes = 32
 
 // New builds the usage command. now is the wall clock injected into the
 // Manager and staleness rendering; nil falls back to time.Now.
@@ -337,7 +357,8 @@ func (c *Command) RunStatus(args []string, stdout, stderr io.Writer) error {
 		c.recordCollectDiagnostics(refreshErr, snaps, started)
 	}
 
-	out := formatStatusUsageWithVisibility(snaps, *maxWidth, c.now(), c.loadHUDVisibilityPreferences())
+	prefs := c.loadHUDVisibilityPreferences()
+	out := formatStatusUsageWithVisibility(snaps, *maxWidth, c.now(), prefs, c.loadHUDRuntimeModels(prefs))
 	if out == "" {
 		return nil
 	}
@@ -865,6 +886,10 @@ type modelDisplay struct {
 	// showAge gates the age-indicator render path. False for
 	// adapters whose data is always near-current (Codex).
 	showAge bool
+	// runtimeModel is the provider's own model identifier, already bounded
+	// and escaped for display (`claude-opus-5`). Empty when unknown or when
+	// Settings hides it. It is the first element the segment sheds.
+	runtimeModel string
 }
 
 // formatStatusUsage produces the HUD-style tmux status segment.
@@ -894,21 +919,30 @@ type modelDisplay struct {
 // `now` is the wall-clock used for staleness detection. Pass time.Time{}
 // to disable the marker (e.g. in tests that don't care).
 func formatStatusUsage(snaps []usage.Snapshot, maxWidth int, now time.Time) string {
-	return formatProjectedStatusUsage(projectStatusSnapshots(snaps), maxWidth, now)
+	return formatProjectedStatusUsage(projectStatusSnapshots(snaps), maxWidth, now, nil)
 }
 
-func formatStatusUsageWithVisibility(snaps []usage.Snapshot, maxWidth int, now time.Time, prefs hudVisibilityPreferences) string {
+// formatStatusUsageWithVisibility renders under the saved Settings visibility.
+// runtimeModels maps a provider key to its display-ready runtime model text
+// (see loadHUDRuntimeModels); nil or a missing key renders no model name.
+func formatStatusUsageWithVisibility(snaps []usage.Snapshot, maxWidth int, now time.Time, prefs hudVisibilityPreferences, runtimeModels map[string]string) string {
 	if len(prefs.providers) == 0 && len(prefs.windows) == 0 {
-		return formatStatusUsage(snaps, maxWidth, now)
+		if len(runtimeModels) == 0 {
+			return formatStatusUsage(snaps, maxWidth, now)
+		}
+		return formatProjectedStatusUsage(projectStatusSnapshots(snaps), maxWidth, now, runtimeModels)
 	}
 	projected := filterStatusProjectionByVisibility(projectStatusSnapshots(snaps), prefs)
-	return formatProjectedStatusUsage(projected, maxWidth, now)
+	return formatProjectedStatusUsage(projected, maxWidth, now, runtimeModels)
 }
 
-func formatProjectedStatusUsage(projected []usage.Snapshot, maxWidth int, now time.Time) string {
+func formatProjectedStatusUsage(projected []usage.Snapshot, maxWidth int, now time.Time, runtimeModels map[string]string) string {
 	models := buildModelDisplays(projected)
 	if len(models) == 0 {
 		return ""
+	}
+	for i := range models {
+		models[i].runtimeModel = runtimeModels[models[i].model]
 	}
 	plan := newUsageSegmentPlan(models)
 	steps := usageShedSteps(models, now)
@@ -938,6 +972,9 @@ func formatProjectedStatusUsage(projected []usage.Snapshot, maxWidth int, now ti
 // a provider's label, its official window, or its staleness marker, so no
 // sequence of shed steps can remove them.
 type usageSegmentPlan struct {
+	// runtimeModel[i] renders model i's runtime model name (`claude-opus-5`)
+	// right after the provider label. A provider without one is unaffected.
+	runtimeModel []bool
 	// ageText[i] renders model i's `(3m)` / `(3h~~)` age TEXT. When false the
 	// model falls back to the bare `~` / `~~` marker, which is not optional.
 	ageText []bool
@@ -956,12 +993,14 @@ type usageSegmentPlan struct {
 // newUsageSegmentPlan is the richest render: every optional element on.
 func newUsageSegmentPlan(models []modelDisplay) usageSegmentPlan {
 	plan := usageSegmentPlan{
-		ageText:    make([]bool, len(models)),
-		secondary:  make([]bool, len(models)),
-		bars:       true,
-		longLabels: true,
+		runtimeModel: make([]bool, len(models)),
+		ageText:      make([]bool, len(models)),
+		secondary:    make([]bool, len(models)),
+		bars:         true,
+		longLabels:   true,
 	}
 	for i := range models {
+		plan.runtimeModel[i] = true
 		plan.ageText[i] = true
 		plan.secondary[i] = true
 	}
@@ -1002,8 +1041,8 @@ type usageShedRule struct {
 //   - The `~` / `~~` staleness marker has NO entry here, so no width can shed
 //     it while any element in this list survives. That is PR #620's contract.
 //   - A provider's official window (5h, or weekly when 5h is absent) has NO
-//     entry either. Rule 3 sheds only the SECOND window of a provider that
-//     reports two; rules 4 and 5 change how the official window is drawn, never
+//     entry either. Rule 4 sheds only the SECOND window of a provider that
+//     reports two; rules 5 and 6 change how the official window is drawn, never
 //     whether it is drawn.
 //
 // Within a per-provider rule, steps run tail-first over the canonical provider
@@ -1011,28 +1050,37 @@ type usageShedRule struct {
 // last to lose detail.
 var usageShedOrder = []usageShedRule{
 	{
-		// 1. The cosmetic age text on a provider that is NOT stale — `(3m)`.
+		// 1. The provider's runtime model name — `claude-opus-5` after
+		// `Claude`. It is the newest and least load-bearing element: the
+		// provider label already identifies the row, so the model name goes
+		// before any age text.
+		name:     "runtime model name",
+		eligible: func(m modelDisplay, _ time.Time) bool { return m.runtimeModel != "" },
+		apply:    func(plan *usageSegmentPlan, model int) { plan.runtimeModel[model] = false },
+	},
+	{
+		// 2. The cosmetic age text on a provider that is NOT stale — `(3m)`.
 		// It is decoration: the data behind it is current.
 		name:     "cosmetic age text",
 		eligible: func(m modelDisplay, now time.Time) bool { return hasHUDAgeText(m, now) && modelStaleLevel(m, now) == 0 },
 		apply:    func(plan *usageSegmentPlan, model int) { plan.ageText[model] = false },
 	},
 	{
-		// 2. The age text on a STALE provider — `(3h~~)` collapses to `~~`.
+		// 3. The age text on a STALE provider — `(3h~~)` collapses to `~~`.
 		// The marker survives; only the "how old exactly" text goes.
 		name:     "stale age text (the ~ / ~~ marker stays)",
 		eligible: func(m modelDisplay, now time.Time) bool { return hasHUDAgeText(m, now) && modelStaleLevel(m, now) > 0 },
 		apply:    func(plan *usageSegmentPlan, model int) { plan.ageText[model] = false },
 	},
 	{
-		// 3. A provider's SECOND window bar — Claude's weekly next to its 5h.
+		// 4. A provider's SECOND window bar — Claude's weekly next to its 5h.
 		// The official window bar is never a candidate.
 		name:     "secondary window bar",
 		eligible: func(m modelDisplay, _ time.Time) bool { return m.hasFive && m.hasWeek },
 		apply:    func(plan *usageSegmentPlan, model int) { plan.secondary[model] = false },
 	},
 	{
-		// 4. Bars, segment-wide: `5h [████░░░░░░] 42%` becomes `5h:42%`. This
+		// 5. Bars, segment-wide: `5h [████░░░░░░] 42%` becomes `5h:42%`. This
 		// is segment-wide because a row that mixes bar and text providers reads
 		// as a rendering bug, and because the text pair is cheap enough that
 		// every provider's second window comes back with it.
@@ -1041,7 +1089,7 @@ var usageShedOrder = []usageShedRule{
 		apply:   func(plan *usageSegmentPlan, _ int) { plan.bars = false },
 	},
 	{
-		// 5. Long labels, segment-wide: `Claude` becomes `C`.
+		// 6. Long labels, segment-wide: `Claude` becomes `C`.
 		name:    "long labels (single-letter fallback)",
 		segment: true,
 		apply:   func(plan *usageSegmentPlan, _ int) { plan.longLabels = false },
@@ -1064,7 +1112,7 @@ func (s usageShedStep) apply(plan *usageSegmentPlan) {
 // tail-first. The result is the exact, finite sequence of removals
 // formatStatusUsage walks — there is no other path to a degraded segment.
 func usageShedSteps(models []modelDisplay, now time.Time) []usageShedStep {
-	steps := make([]usageShedStep, 0, len(usageShedOrder)+2*len(models))
+	steps := make([]usageShedStep, 0, len(usageShedOrder)+3*len(models))
 	for i, rule := range usageShedOrder {
 		if rule.segment {
 			steps = append(steps, usageShedStep{rule: i, model: -1})
@@ -1108,10 +1156,12 @@ func renderUsageSegment(models []modelDisplay, now time.Time, plan usageSegmentP
 	return renderUsageText(models, now, plan)
 }
 
-// renderUsageHUD renders the graphical form: `<label><age> 5h [bar] N% · weekly
-// [bar] N%` per provider. The age element selected by the plan is injected
-// right after the model label (see renderHUDAgeSuffix for its exact shape), and
-// the second window is emitted only while the plan still allows it.
+// renderUsageHUD renders the graphical form: `<label><runtime model><age> 5h
+// [bar] N% · weekly [bar] N%` per provider. The runtime model name, when the
+// plan still allows it, follows the label as one noun phrase (`Claude
+// claude-opus-5`); the age element selected by the plan comes next (see
+// renderHUDAgeSuffix for its exact shape), and the second window is emitted
+// only while the plan still allows it.
 func renderUsageHUD(models []modelDisplay, now time.Time, plan usageSegmentPlan) string {
 	blocks := make([]string, 0, len(models))
 	for i, m := range models {
@@ -1128,6 +1178,11 @@ func renderUsageHUD(models []modelDisplay, now time.Time, plan usageSegmentPlan)
 		b.WriteString("#[fg=" + labelFg + ",bold]")
 		b.WriteString(m.label)
 		b.WriteString(statusDefaultReset)
+		if plan.runtimeModel[i] && m.runtimeModel != "" {
+			// Same accent as the label, not bold: the model name is the
+			// second half of the provider's noun phrase, not a new column.
+			b.WriteString(" #[fg=" + labelFg + "]" + m.runtimeModel + statusDefaultReset)
+		}
 		b.WriteString(renderHUDAgeSuffix(m, now, plan.ageMode(i)))
 		first := true
 		writePair := func(window string, pct float64) {
@@ -1499,6 +1554,11 @@ func HUDProviderCapabilities() []HUDProviderCapability {
 				{Window: usage.Window5h, Key: "5h", Label: "5h", DefaultVisibility: config.StatusbarVisibilityOn},
 				{Window: usage.WindowWeekly, Key: "weekly", Label: "Weekly", DefaultVisibility: config.StatusbarVisibilityOn},
 			}
+			// Claude Code reports its runtime model through SessionStart and
+			// PostModelSwitch; the row defaults on because it renders only
+			// when a model was actually observed and is the first element
+			// the segment sheds, so a narrow row never pays for it.
+			capability.RuntimeModel = &HUDRuntimeModelCapability{Key: "model", Label: "Model", DefaultVisibility: config.StatusbarVisibilityOn}
 		case aiprovider.Codex:
 			capability.Windows = []HUDWindowCapability{
 				{Window: usage.Window5h, Key: "5h", Label: "5h", DefaultVisibility: config.StatusbarVisibilityOff},
@@ -1512,8 +1572,9 @@ func HUDProviderCapabilities() []HUDProviderCapability {
 
 func (c *Command) loadHUDVisibilityPreferences() hudVisibilityPreferences {
 	prefs := hudVisibilityPreferences{
-		providers: make(map[string]bool),
-		windows:   make(map[string]map[usage.Window]bool),
+		providers:     make(map[string]bool),
+		windows:       make(map[string]map[usage.Window]bool),
+		runtimeModels: make(map[string]bool),
 	}
 	capabilities := HUDProviderCapabilities()
 	for _, provider := range capabilities {
@@ -1522,6 +1583,9 @@ func (c *Command) loadHUDVisibilityPreferences() hudVisibilityPreferences {
 		prefs.windows[model] = make(map[usage.Window]bool, len(provider.Windows))
 		for _, window := range provider.Windows {
 			prefs.windows[model][window.Window] = config.NormalizeStatusbarVisibility(string(window.DefaultVisibility)) == config.StatusbarVisibilityOn
+		}
+		if provider.RuntimeModel != nil {
+			prefs.runtimeModels[model] = config.NormalizeStatusbarVisibility(string(provider.RuntimeModel.DefaultVisibility)) == config.StatusbarVisibilityOn
 		}
 	}
 	paths, err := c.hudVisibilityConfigPaths()
@@ -1538,8 +1602,45 @@ func (c *Command) loadHUDVisibilityPreferences() hudVisibilityPreferences {
 				prefs.windows[model][window.Window] = state.Effective == config.StatusbarVisibilityOn
 			}
 		}
+		if provider.RuntimeModel != nil {
+			state, err := config.LoadStatusbarVisibilityFileWithDefault(paths.StatusbarAgentUsageModelVisibilityFile(string(provider.ID)), provider.RuntimeModel.DefaultVisibility)
+			if err == nil {
+				prefs.runtimeModels[model] = state.Effective == config.StatusbarVisibilityOn
+			}
+		}
 	}
 	return prefs
+}
+
+// loadHUDRuntimeModels reads each provider's runtime model sidecar (written
+// by hook ingest into the usage state dir) and returns the display-ready
+// text keyed by provider. A provider whose Settings row is off, whose
+// capability declares no runtime model, or whose sidecar is missing gets no
+// entry, so the HUD renders exactly as it did before this element existed.
+func (c *Command) loadHUDRuntimeModels(prefs hudVisibilityPreferences) map[string]string {
+	stateDir, err := c.resolveStateDir()
+	if err != nil {
+		return nil
+	}
+	return hudRuntimeModelsFrom(stateDir, prefs)
+}
+
+func hudRuntimeModelsFrom(stateDir string, prefs hudVisibilityPreferences) map[string]string {
+	out := map[string]string{}
+	for _, provider := range HUDProviderCapabilities() {
+		model := strings.ToLower(strings.TrimSpace(provider.Model))
+		if provider.RuntimeModel == nil || !prefs.runtimeModels[model] {
+			continue
+		}
+		rec, ok := runtimemodel.Read(stateDir, model)
+		if !ok {
+			continue
+		}
+		if text := boundedOpaqueDisplayID(rec.Model, hudRuntimeModelMaxRunes); text != "" {
+			out[model] = text
+		}
+	}
+	return out
 }
 
 // HUDSnapshots returns the windows the ambient status bar HUD draws from

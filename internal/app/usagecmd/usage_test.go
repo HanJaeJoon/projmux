@@ -2318,7 +2318,7 @@ func TestHUDVisibilityFilterRecomputesWeeklyAsOfficialAcrossWidthSweep(t *testin
 	}
 	minimum := intrender.VisualLen(renderUsageSegment(models, now, plan))
 	for width := minimum; width <= 200; width++ {
-		plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(filtered, width, now))
+		plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(filtered, width, now, nil))
 		if !strings.Contains(plain, "weekly") || strings.Contains(plain, "5h") {
 			t.Fatalf("width %d weekly official drift: %q", width, plain)
 		}
@@ -2330,7 +2330,7 @@ func TestHUDVisibilityFilterRecomputesWeeklyAsOfficialAcrossWidthSweep(t *testin
 	if len(fiveModels) != 1 || !fiveModels[0].hasFive || fiveModels[0].hasWeek {
 		t.Fatalf("5h-only model = %#v", fiveModels)
 	}
-	plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(fiveOnly, 200, now))
+	plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(fiveOnly, 200, now, nil))
 	if !strings.Contains(plain, "5h") || strings.Contains(plain, "weekly") {
 		t.Fatalf("weekly-off 5h-on projection drift: %q", plain)
 	}
@@ -2353,12 +2353,12 @@ func TestHUDVisibilityFilterLeavesNoProviderWindowSeparatorOrStalenessResidue(t 
 			"codex":  {usage.Window5h: false, usage.WindowWeekly: true},
 		},
 	}
-	plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now))
+	plain := intrender.StripTmuxEscapes(formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now, nil))
 	if !strings.HasPrefix(plain, "Codex") || strings.Contains(plain, "Claude") || strings.Contains(plain, "5h") || strings.Contains(plain, "~~") || strings.Contains(plain, "   ") {
 		t.Fatalf("filtered output retained provider/window/separator/staleness residue: %q", plain)
 	}
 	prefs.windows["codex"][usage.WindowWeekly] = false
-	if got := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now); got != "" {
+	if got := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now, nil); got != "" {
 		t.Fatalf("all provider windows off = %q, want empty ambient text", got)
 	}
 }
@@ -2381,20 +2381,20 @@ func TestHUDVisibilityProviderTogglePreservesOtherProviderBytesAndOrder(t *testi
 	}
 	for _, hidden := range []string{"claude", "codex"} {
 		prefs.providers[hidden] = false
-		got := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now)
+		got := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now, nil)
 		var survivors []usage.Snapshot
 		for _, snapshot := range snaps {
 			if snapshot.Model != hidden {
 				survivors = append(survivors, snapshot)
 			}
 		}
-		want := formatProjectedStatusUsage(projectStatusSnapshots(survivors), 0, now)
+		want := formatProjectedStatusUsage(projectStatusSnapshots(survivors), 0, now, nil)
 		if got != want {
 			t.Fatalf("%s-off changed surviving provider bytes/order:\n got %q\nwant %q", hidden, got, want)
 		}
 		prefs.providers[hidden] = true
 	}
-	if got, want := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now), formatProjectedStatusUsage(projected, 0, now); got != want {
+	if got, want := formatProjectedStatusUsage(filterStatusProjectionByVisibility(projected, prefs), 0, now, nil), formatProjectedStatusUsage(projected, 0, now, nil); got != want {
 		t.Fatalf("provider on restore drifted all-on bytes:\n got %q\nwant %q", got, want)
 	}
 }

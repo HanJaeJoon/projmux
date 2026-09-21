@@ -269,17 +269,21 @@ The usage segment does not pick a whole-segment tier. It starts from its
 richest render and sheds **one optional element at a time** until the result
 fits its budget. The order below is the drop order; index 1 goes first.
 
-1. `cosmetic age text` — the `(3m)` on a provider that is *not* stale. Per
+1. `runtime model name` — the provider's own model identifier after its label,
+   `Claude claude-opus-5` back to `Claude`. The label already identifies the
+   row, so this is the first thing to go. Per provider; only Claude reports
+   one (see [Runtime model name](#runtime-model-name) below).
+2. `cosmetic age text` — the `(3m)` on a provider that is *not* stale. Per
    provider.
-2. `stale age text (the ~ / ~~ marker stays)` — `(3d~~)` collapses to `~~`.
+3. `stale age text (the ~ / ~~ marker stays)` — `(3d~~)` collapses to `~~`.
    Only the "how old exactly" text goes. Per provider.
-3. `secondary window bar` — the *second* window of a provider that reports two,
+4. `secondary window bar` — the *second* window of a provider that reports two,
    i.e. Claude's weekly next to its 5h. Per provider.
-4. `bars (every provider switches to text pairs)` — `5h [████░░░░░░] 42%`
+5. `bars (every provider switches to text pairs)` — `5h [████░░░░░░] 42%`
    becomes `5h:42%`. Segment-wide, because a row that mixes bar and text
    providers reads as a rendering bug, and because the text pair is cheap
    enough that every provider's second window comes back with it.
-5. `long labels (single-letter fallback)` — `Claude` becomes `C`.
+6. `long labels (single-letter fallback)` — `Claude` becomes `C`.
    Segment-wide.
 
 Then, and only then, hard rune-truncation with a trailing `…`.
@@ -289,16 +293,16 @@ them survive everything in it:
 
 - **The `~` / `~~` staleness marker.** It has no entry, so no width sheds it
   while any listed element still renders. This is the contract PR #620
-  established, and rule 2 exists precisely so the age *text* can go without the
+  established, and rule 3 exists precisely so the age *text* can go without the
   marker going with it.
 - **Each provider's official window bar** — 5h when the provider reports one,
-  otherwise weekly. Rule 3 only ever touches a *second* window; rules 4 and 5
+  otherwise weekly. Rule 4 only ever touches a *second* window; rules 5 and 6
   change how the official window is drawn, never whether it is drawn. No step
   hides a provider wholesale.
 
 Visibility filtering runs before this classification. Thus hiding `5h` while
 keeping `Weekly` makes Weekly the provider's official window; it is not treated
-as a secondary bar and cannot be shed by rule 3.
+as a secondary bar and cannot be shed by rule 4.
 
 Only hard rune-truncation, below every listed step, can reach either.
 
@@ -313,6 +317,35 @@ The order lives in **exactly one place in code**: `usageShedOrder` in
 `internal/app/usagecmd/usage.go`. The entry names above are that variable's
 `name` fields verbatim, and `TestDropOrderMatchesTheDocumentedOrder` reads this
 section to prove the two have not drifted.
+
+### Runtime model name
+
+The Claude row can carry the model Claude Code is actually running, right
+after the provider label and before the age text:
+
+```
+Claude claude-opus-5 (3m) 5h [████░░░░░░] 42% · weekly [██░░░░░░░░] 18%
+```
+
+The value is the identifier Claude Code's official hook events report:
+`SessionStart` (`model`, when the payload carries it) and `PostModelSwitch`
+(`to_model`, on every `/model` switch, automatic fallback, and resume). Hook
+ingest writes the newest observation to a best-effort sidecar in the usage
+state directory (`runtime-model-claude.json`, next to `snapshots.json`), and
+`internal status usage` reads it back. The identifier is printed as data:
+escaped and bounded to 32 cells like an opaque quota bucket id, never mapped to
+a marketing alias, so `claude-opus-5` renders as `claude-opus-5`. With several
+Claude panes the most recent observation wins, whichever pane it came from.
+
+In this code base "model" otherwise means the usage *provider* (`--model
+claude`, `Snapshot.Model`); the runtime model is the provider's own model and
+is named `runtime model` everywhere in code and Settings to keep the two apart.
+
+Settings > Appearance > Status Bar > Agent Usage HUD > Claude > `Model` toggles
+the element (`statusbar-visibility-agent-usage-model-claude`, default `on`). It
+is presentation only: the sidecar keeps being written while the row is off. The
+text tiers below the bars (`Claude 5h:42%`) never spell it, because rule 1 has
+already shed it before rule 5 switches the segment to text.
 
 ## Range catalogue
 

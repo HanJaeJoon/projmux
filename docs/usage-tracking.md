@@ -249,12 +249,42 @@ in `agent usage --model codex` table/JSON output and in
 those fields.
 
 Settings > Appearance > Status Bar > Agent Usage HUD can hide the whole HUD,
-a provider, or one supported window. Parent off states preserve child saved
+a provider, one supported window, or the Claude runtime model name (`Model`).
+Parent off states preserve child saved
 values. The filter is ambient-only: `agent usage` table/JSON, explicit model or
 window reads, `CachedState` popup data, provider enablement, refresh/backoff,
 and snapshot bytes are unchanged. After filtering, official/secondary is
 recomputed; a weekly-only provider keeps weekly as its official window through
 the normal width shed order.
+
+### Claude runtime model
+
+The Claude row can also print the model Claude Code is running, between the
+`Claude` label and the age text: `Claude claude-opus-5 (3m) 5h [...] 42%`. In
+this document "model" otherwise means the usage *provider* (`--model claude`,
+`Snapshot.Model`); the runtime model is the provider's own model identifier and
+is named `runtime model` in code, Settings copy, and the sidecar.
+
+It is not a usage adapter output. Claude hook ingest records it from the
+official hook events only, in the spirit of #1028 (hook events, never a
+statusLine display payload): `SessionStart` `model` when the payload carries
+it, `PostModelSwitch` `to_model` on every switch, automatic fallback and
+resume, and the newest assistant `message.model` in the transcript tail `Stop`
+already reads. The newest observation is written to
+
+```
+${PROJMUX_USAGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/projmux/usage}/runtime-model-claude.json
+```
+
+as `{provider, model, source, session_id, pane_id, observed_at}`, the way #486
+wrote the Antigravity context sidecar: best-effort, one record per provider,
+latest observation wins across panes, and a missing or malformed file renders
+no model name rather than an error. The identifier is presentation data: it is
+escaped and bounded to 32 cells like an opaque bucket id and never mapped to a
+marketing alias. It is the first element the width shed order gives up, so a
+row that never had room for it is byte-identical to the previous release, and
+the colorless text tiers never spell it. It does not appear in `agent usage`
+table/JSON, the statusbar popup, or the web HUD cells.
 
 As `--max-width` shrinks the segment does not fall to a coarser whole-segment
 tier. It sheds **one optional element at a time** — a cosmetic age indicator
