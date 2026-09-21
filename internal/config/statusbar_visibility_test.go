@@ -26,6 +26,7 @@ func TestStatusbarVisibilityDefaultSavedInvalidAndRoundTrip(t *testing.T) {
 		paths.StatusbarAgentUsageWindowVisibilityFile("codex", "5h"):           "statusbar-visibility-agent-usage-window-codex-5h",
 		paths.StatusbarAgentUsageWindowVisibilityFile("codex", "weekly"):       "statusbar-visibility-agent-usage-window-codex-weekly",
 		paths.StatusbarAgentUsageWindowVisibilityFile("antigravity", "weekly"): "statusbar-visibility-agent-usage-window-antigravity-weekly",
+		paths.StatusbarAgentUsageModelVisibilityFile("Claude"):                 "statusbar-visibility-agent-usage-model-claude",
 	} {
 		if want := filepath.Join(paths.ConfigDir, leaf); got != want {
 			t.Fatalf("visibility leaf path = %q, want %q", got, want)

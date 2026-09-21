@@ -481,6 +481,7 @@ func (e *settingsLayerGuardEnv) seedFrontFiles(t *testing.T) {
 		p.StatusbarAgentUsageProviderVisibilityFile("codex"):         "off",
 		p.StatusbarAgentUsageWindowVisibilityFile("claude", "5h"):    "off",
 		p.StatusbarAgentUsageWindowVisibilityFile("codex", "weekly"): "off",
+		p.StatusbarAgentUsageModelVisibilityFile("claude"):           "off",
 		p.StatusbarProjectVisibilityFile():                           "off",
 		p.StatusbarWorkingDirectoryVisibilityFile():                  "off",
 		p.StatusbarGitVisibilityFile():                               "off",

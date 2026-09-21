@@ -494,6 +494,12 @@ func (c *settingsCommand) agentUsageProviderEntries(provider string) []intpicker
 		effective := gatedStatusbarVisibility(saved, overall, providerSaved)
 		entries = append(entries, agentUsageVisibilityToggleEntry(locale, window.Label, leaf, saved, effective))
 	}
+	if runtimeModel := capability.RuntimeModel; runtimeModel != nil {
+		leaf := agentUsageVisibilityLeaf{provider: provider, runtimeModel: true}
+		saved := loadAgentUsageVisibilityState(c.homeDir, c.lookupEnv, leaf)
+		effective := gatedStatusbarVisibility(saved, overall, providerSaved)
+		entries = append(entries, agentUsageVisibilityToggleEntry(locale, runtimeModel.Label, leaf, saved, effective))
+	}
 	return entries
 }
 
@@ -507,15 +513,20 @@ func agentUsageVisibilityToggleEntry(locale i18n.Locale, label string, leaf agen
 		color = settingsColorDim
 	}
 	action := string(statusbarHUDAgentUsage) + ":" + string(next)
-	if leaf.provider != "" && leaf.window == "" {
+	searchLeaf := leaf.window
+	switch {
+	case leaf.provider != "" && leaf.runtimeModel:
+		action = agentUsageModelVisibilityAction + ":" + leaf.provider + ":" + string(next)
+		searchLeaf = "model runtime model name"
+	case leaf.provider != "" && leaf.window == "":
 		action = agentUsageProviderVisibilityAction + ":" + leaf.provider + ":" + string(next)
-	} else if leaf.provider != "" {
+	case leaf.provider != "":
 		action = agentUsageWindowVisibilityAction + ":" + leaf.provider + ":" + leaf.window + ":" + string(next)
 	}
 	return intpickercompat.Entry{
 		Label:     settingsLabelLocale(locale, glyph, color, label, agentUsageVisibilityStateText(locale, saved, effective)),
 		Value:     settingsActionPrefixHUDVisibility + action,
-		SearchKey: "agent usage visibility " + leaf.provider + " " + leaf.window + " saved effective source on off",
+		SearchKey: "agent usage visibility " + leaf.provider + " " + searchLeaf + " saved effective source on off",
 	}
 }
 
@@ -749,7 +760,11 @@ func (c *settingsCommand) runStatusbarVisibilityMutation(raw string, stdout, std
 		if capability, found := agentUsageProviderCapability(leaf.provider); found {
 			name = capability.DisplayName
 		}
-		if leaf.window != "" {
+		if leaf.runtimeModel {
+			if runtimeModel, found := agentUsageRuntimeModelCapability(leaf.provider); found {
+				name += " " + runtimeModel.Label
+			}
+		} else if leaf.window != "" {
 			if window, found := agentUsageWindowCapability(leaf.provider, leaf.window); found {
 				name += " " + window.Label
 			}

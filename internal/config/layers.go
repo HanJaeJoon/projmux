@@ -132,6 +132,7 @@ var settingItems = []SettingItem{
 	declareFile(StatusbarAgentUsageHUDVisibilityFileName, LayerTUI, "statusbar-visibility-*"),
 	declareFamily(StatusbarAgentUsageProviderVisibilityFilePrefix, "<provider>", LayerTUI, "statusbar-visibility-*"),
 	declareFamily(StatusbarAgentUsageWindowVisibilityFilePrefix, "<provider>-<window>", LayerTUI, "statusbar-visibility-*"),
+	declareFamily(StatusbarAgentUsageModelVisibilityFilePrefix, "<provider>", LayerTUI, "statusbar-visibility-*"),
 	declareFile(StatusbarProjectVisibilityFileName, LayerTUI, "statusbar-visibility-*"),
 	declareFile(StatusbarWorkingDirectoryVisibilityFileName, LayerTUI, "statusbar-visibility-*"),
 	declareFile(StatusbarGitVisibilityFileName, LayerTUI, "statusbar-visibility-*"),

@@ -993,6 +993,8 @@ independent global presentation preferences:
 - `Agent Usage HUD > Visible`
 - `Agent Usage HUD > Claude|Codex > Visible`
 - each provider's supported HUD windows (`5h`, `Weekly`)
+- the Claude runtime model name (`Model`), the identifier Claude Code's hooks
+  report, printed after the `Claude` label
 
 The saved values are `on` or `off` in these files:
 
@@ -1005,6 +1007,7 @@ The saved values are `on` or `off` in these files:
 ~/.config/projmux/statusbar-visibility-agent-usage-window-claude-weekly
 ~/.config/projmux/statusbar-visibility-agent-usage-window-codex-5h
 ~/.config/projmux/statusbar-visibility-agent-usage-window-codex-weekly
+~/.config/projmux/statusbar-visibility-agent-usage-model-claude
 ```
 
 Missing, empty, and invalid values resolve to `on` except the Codex `5h`

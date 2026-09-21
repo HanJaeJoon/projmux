@@ -343,6 +343,22 @@ func settingsRootResultInstances(nodeID string, locale i18n.Locale, enclosing []
 		}
 		return out, true
 
+	case settingsNavStatusBar + ".agent-usage-hud.provider.model":
+		// One row per provider that reports a runtime model (Claude only);
+		// the other providers list nothing under this node.
+		provider := settingsRootResultNearestKey(enclosing)
+		var out []settingsRootResultInstance
+		for _, capability := range usagecmd.HUDProviderCapabilities() {
+			if string(capability.ID) != provider || capability.RuntimeModel == nil {
+				continue
+			}
+			out = append(out, settingsRootResultInstance{
+				Key:   capability.RuntimeModel.Key,
+				Label: settingsCatalogTextLocale(locale, capability.RuntimeModel.Label),
+			})
+		}
+		return out, true
+
 	case settingsNavKeybindings + "." + keyBindingCategorySurfaces + ".surface":
 		members := keybindingActionsInCategory(defaultKeyBindingCatalog(), keyBindingCategorySurfaces)
 		var out []settingsRootResultInstance
@@ -563,6 +579,8 @@ func settingsRootResultRowValue(node settingsNavNode, instances []settingsRootRe
 		return settingsRootResultVisibilityPrefix(agentUsageProviderVisibilityAction + ":" + key), true
 	case settingsNavStatusBar + ".agent-usage-hud.provider.window":
 		return settingsRootResultVisibilityPrefix(agentUsageWindowVisibilityAction + ":" + enclosing + ":" + key), true
+	case settingsNavStatusBar + ".agent-usage-hud.provider.model":
+		return settingsRootResultVisibilityPrefix(agentUsageModelVisibilityAction + ":" + enclosing), true
 	case settingsNavStatusBar + ".project":
 		return settingsRootResultVisibilityPrefix(string(statusbarRowOneProject)), true
 	case settingsNavStatusBar + ".working-directory.visible":

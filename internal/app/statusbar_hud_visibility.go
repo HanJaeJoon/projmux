@@ -20,14 +20,19 @@ type statusbarHUDVisibilitySet struct {
 	AgentUsage    config.StatusbarVisibility
 }
 
+// agentUsageVisibilityLeaf names one Agent Usage HUD visibility file: the
+// component (zero value), a provider, one of its windows, or its runtime model
+// row (runtimeModel set, window empty).
 type agentUsageVisibilityLeaf struct {
-	provider string
-	window   string
+	provider     string
+	window       string
+	runtimeModel bool
 }
 
 const (
 	agentUsageProviderVisibilityAction = "agent-usage-provider"
 	agentUsageWindowVisibilityAction   = "agent-usage-window"
+	agentUsageModelVisibilityAction    = "agent-usage-model"
 )
 
 func defaultStatusbarHUDVisibilitySet() statusbarHUDVisibilitySet {
@@ -169,10 +174,26 @@ func agentUsageWindowCapability(provider, window string) (usagecmd.HUDWindowCapa
 	return usagecmd.HUDWindowCapability{}, false
 }
 
+// agentUsageRuntimeModelCapability returns the provider's runtime model row,
+// or false when the provider declares none (every provider but Claude).
+func agentUsageRuntimeModelCapability(provider string) (usagecmd.HUDRuntimeModelCapability, bool) {
+	capability, ok := agentUsageProviderCapability(provider)
+	if !ok || capability.RuntimeModel == nil {
+		return usagecmd.HUDRuntimeModelCapability{}, false
+	}
+	return *capability.RuntimeModel, true
+}
+
 func agentUsageVisibilityPath(paths config.Paths, leaf agentUsageVisibilityLeaf) (string, bool) {
 	provider, ok := agentUsageProviderCapability(leaf.provider)
 	if !ok {
 		return "", false
+	}
+	if leaf.runtimeModel {
+		if _, ok := agentUsageRuntimeModelCapability(string(provider.ID)); !ok {
+			return "", false
+		}
+		return paths.StatusbarAgentUsageModelVisibilityFile(string(provider.ID)), true
 	}
 	if strings.TrimSpace(leaf.window) == "" {
 		return paths.StatusbarAgentUsageProviderVisibilityFile(string(provider.ID)), true
@@ -186,10 +207,15 @@ func agentUsageVisibilityPath(paths config.Paths, leaf agentUsageVisibilityLeaf)
 
 func loadAgentUsageVisibilityState(homeDir func() (string, error), lookupEnv func(string) string, leaf agentUsageVisibilityLeaf) config.StatusbarVisibilityState {
 	defaultState := config.DefaultStatusbarVisibilityState()
-	window, hasWindow := agentUsageWindowCapability(leaf.provider, leaf.window)
-	if strings.TrimSpace(leaf.window) != "" && hasWindow {
-		defaultState.Effective = config.NormalizeStatusbarVisibility(string(window.DefaultVisibility))
+	leafDefault := config.StatusbarVisibilityOn
+	if leaf.runtimeModel {
+		if runtimeModel, ok := agentUsageRuntimeModelCapability(leaf.provider); ok {
+			leafDefault = runtimeModel.DefaultVisibility
+		}
+	} else if window, ok := agentUsageWindowCapability(leaf.provider, leaf.window); strings.TrimSpace(leaf.window) != "" && ok {
+		leafDefault = window.DefaultVisibility
 	}
+	defaultState.Effective = config.NormalizeStatusbarVisibility(string(leafDefault))
 	paths, err := configPaths(homeDir, lookupEnv)
 	if err != nil {
 		return defaultState
@@ -198,12 +224,7 @@ func loadAgentUsageVisibilityState(homeDir func() (string, error), lookupEnv fun
 	if !ok {
 		return defaultState
 	}
-	var state config.StatusbarVisibilityState
-	if hasWindow {
-		state, err = config.LoadStatusbarVisibilityFileWithDefault(path, window.DefaultVisibility)
-	} else {
-		state, err = config.LoadStatusbarVisibilityFile(path)
-	}
+	state, err := config.LoadStatusbarVisibilityFileWithDefault(path, leafDefault)
 	if err != nil {
 		return defaultState
 	}
@@ -232,6 +253,16 @@ func parseAgentUsageVisibilityAction(value string) (agentUsageVisibilityLeaf, co
 			return agentUsageVisibilityLeaf{}, "", false
 		}
 		return agentUsageVisibilityLeaf{provider: strings.ToLower(strings.TrimSpace(parts[1]))}, mode, true
+	}
+	if len(parts) == 3 && parts[0] == agentUsageModelVisibilityAction {
+		if _, ok := agentUsageRuntimeModelCapability(parts[1]); !ok {
+			return agentUsageVisibilityLeaf{}, "", false
+		}
+		mode := config.StatusbarVisibility(strings.ToLower(strings.TrimSpace(parts[2])))
+		if mode != config.StatusbarVisibilityOn && mode != config.StatusbarVisibilityOff {
+			return agentUsageVisibilityLeaf{}, "", false
+		}
+		return agentUsageVisibilityLeaf{provider: strings.ToLower(strings.TrimSpace(parts[1])), runtimeModel: true}, mode, true
 	}
 	if len(parts) == 4 && parts[0] == agentUsageWindowVisibilityAction {
 		if _, ok := agentUsageWindowCapability(parts[1], parts[2]); !ok {

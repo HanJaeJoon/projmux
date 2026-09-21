@@ -136,6 +136,7 @@ var uiTextKeys = map[string]i18n.Key{
 	"Status Bar":                  "settings.text.status_bar",
 	"Notifications HUD":           "settings.text.notifications_hud",
 	"Working directory":           "settings.text.working_directory",
+	"Model":                       "settings.text.model",
 	"Clock":                       "settings.text.clock",
 	"Settings launcher":           "settings.text.settings_launcher",
 	"Icon":                        "settings.text.icon",

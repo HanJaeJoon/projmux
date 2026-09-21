@@ -13,6 +13,7 @@ const (
 	StatusbarAgentUsageHUDVisibilityFileName        = "statusbar-visibility-agent-usage-hud"
 	StatusbarAgentUsageProviderVisibilityFilePrefix = "statusbar-visibility-agent-usage-provider-"
 	StatusbarAgentUsageWindowVisibilityFilePrefix   = "statusbar-visibility-agent-usage-window-"
+	StatusbarAgentUsageModelVisibilityFilePrefix    = "statusbar-visibility-agent-usage-model-"
 	StatusbarProjectVisibilityFileName              = "statusbar-visibility-project"
 	StatusbarWorkingDirectoryVisibilityFileName     = "statusbar-visibility-working-directory"
 	StatusbarGitVisibilityFileName                  = "statusbar-visibility-git"
@@ -78,6 +79,13 @@ func (p Paths) StatusbarAgentUsageProviderVisibilityFile(provider string) string
 func (p Paths) StatusbarAgentUsageWindowVisibilityFile(provider, window string) string {
 	leaf := strings.ToLower(strings.TrimSpace(provider)) + "-" + strings.ToLower(strings.TrimSpace(window))
 	return filepath.Join(p.ConfigDir, StatusbarAgentUsageWindowVisibilityFilePrefix+leaf)
+}
+
+// StatusbarAgentUsageModelVisibilityFile returns the presentation-only
+// visibility leaf for a provider's runtime model name in the usage HUD. Only
+// providers whose capability declares a runtime model row own one.
+func (p Paths) StatusbarAgentUsageModelVisibilityFile(provider string) string {
+	return filepath.Join(p.ConfigDir, StatusbarAgentUsageModelVisibilityFilePrefix+strings.ToLower(strings.TrimSpace(provider)))
 }
 
 func (p Paths) StatusbarProjectVisibilityFile() string {
