@@ -836,33 +836,55 @@ func TestExactAgentControlCanonicalLabelsAreLocalized(t *testing.T) {
 	}
 }
 
-// TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow is C-1: the
-// two refusals an operator meets during an install stop reading the same.
+// TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow is C-1 and
+// C-2 in one table: the refusals an operator meets during an install stay
+// distinguishable, and the one of them that is not a reason to stop stops
+// nothing.
 //
-// Before this, a lifecycle read that met a draining broker fell through
+// Before C-1, a lifecycle read that met a draining broker fell through
 // lifecycleReadRefusal's default and was reported as turn-state-unavailable --
 // byte for byte what the one-second turn-state window reports. The two call
 // for opposite things. The window clears on the next attempt; the drain lasts
 // until the last binding is released, so retrying is the one thing that cannot
 // work. The operator's only signal is the line, so the line has to differ.
 //
-// All three lifecycle-read sites are held, because the seam is shared and a
-// message built at the call site could drift back into the shared wording.
+// C-2 then split the drain itself in two. A drain refuses the read because the
+// read opens its own connection; the binding underneath it is untouched and
+// keeps carrying writes. So a write this epoch can still place on the tracked
+// state is not refused at all, and only a write that state cannot carry brings
+// the drain line back -- as the drain, never as a turn state nobody confirmed.
+//
+// The other three causes are held at all three lifecycle-read sites, because
+// the seam is shared and a message built at the call site could drift back
+// into the shared wording.
 func TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow(t *testing.T) {
 	identity := phase6Identity()
 	active := activeWithThreadState(codexappserver.ThreadStateActive)
 	idle := codexappserver.LifecycleSnapshot{ThreadID: "thread-1", ThreadState: codexappserver.ThreadStateIdle}
+	// A thread tracked as idle while its last turn is still in progress is a
+	// state no write can be placed on: steer and deliver find no steerable turn
+	// and start finds one still running.
+	stranded := codexappserver.LifecycleSnapshot{ThreadID: "thread-1", ThreadState: codexappserver.ThreadStateIdle,
+		TurnID: "turn-1", TurnState: codexappserver.TurnStateInProgress}
 	sites := []struct {
 		name      string
 		operation string
-		opening   codexappserver.LifecycleSnapshot
+		write     string
+		// opening is a tracked state the write can be placed on, and stalled
+		// one it cannot.
+		opening codexappserver.LifecycleSnapshot
+		stalled codexappserver.LifecycleSnapshot
+		// readsWhenStalled is false for the one site whose own tracked-state
+		// gate runs before the lifecycle read. Steer refuses there, so a
+		// stalled steer never reaches the drain to report it.
+		readsWhenStalled bool
 	}{
-		{"start", agentControlOpStart, idle},
-		{"steer", agentControlOpSteer, active},
-		{"deliver", agentControlOpDeliver, active},
+		{"start", agentControlOpStart, agentControlWriteStart, idle, active, true},
+		{"steer", agentControlOpSteer, agentControlWriteSteer, active, stranded, false},
+		{"deliver", agentControlOpDeliver, agentControlWriteDeliver, active, stranded, true},
 	}
 
-	refuse := func(t *testing.T, opening codexappserver.LifecycleSnapshot, operation string,
+	handle := func(t *testing.T, opening codexappserver.LifecycleSnapshot, operation string,
 		readErr error,
 	) (agentControlResponse, *fakeExactControlWire) {
 		t.Helper()
@@ -872,6 +894,14 @@ func TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow(t *testing.T
 		response := epoch.Handle(t.Context(), agentControlRequest{
 			Operation: operation, Identity: identity, Epoch: "epoch-1", Text: "input",
 		})
+		return response, wire
+	}
+
+	refuse := func(t *testing.T, opening codexappserver.LifecycleSnapshot, operation string,
+		readErr error,
+	) (agentControlResponse, *fakeExactControlWire) {
+		t.Helper()
+		response, wire := handle(t, opening, operation, readErr)
 		if response.OK || wire.writes() != 0 {
 			t.Fatalf("%s response = %+v, writes = %d, want a refusal that wrote nothing", operation, response, wire.writes())
 		}
@@ -880,18 +910,39 @@ func TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow(t *testing.T
 
 	for _, site := range sites {
 		t.Run(site.name, func(t *testing.T) {
-			drained, _ := refuse(t, site.opening, site.operation,
-				&codexbroker.BrokerError{Refusal: codexbroker.RefusalDrainRequired})
-			line := drained.Error().Error()
-			if drained.Code != string(codexbroker.RefusalDrainRequired) {
-				t.Fatalf("drain refusal code = %q, want drain-required", drained.Code)
+			drain := func() error { return &codexbroker.BrokerError{Refusal: codexbroker.RefusalDrainRequired} }
+
+			// C-2: the drain took the read, not the binding. A write the
+			// tracked state carries still reaches the provider.
+			carried, wire := handle(t, site.opening, site.operation, drain())
+			if !carried.OK || wire.writes() != 1 {
+				t.Fatalf("%s during a drain = %+v, writes = %d, want the bound thread to take one write",
+					site.operation, carried, wire.writes())
 			}
-			if !strings.Contains(drained.Message, "install drain") || !strings.Contains(line, "drain-required") {
-				t.Fatalf("drain refusal line = %q, want it to name the install drain and carry drain-required", line)
+
+			// C-1: the write the tracked state cannot carry is still refused,
+			// and still as the drain.
+			drained, wire := refuse(t, site.stalled, site.operation, drain())
+			if site.readsWhenStalled {
+				line := drained.Error().Error()
+				if drained.Code != string(codexbroker.RefusalDrainRequired) {
+					t.Fatalf("drain refusal code = %q, want drain-required", drained.Code)
+				}
+				if !strings.Contains(drained.Message, "install drain") || !strings.Contains(line, "drain-required") {
+					t.Fatalf("drain refusal line = %q, want it to name the install drain and carry drain-required", line)
+				}
+				if want := drainedWriteRefusal(site.write); drained.Message != want.Message {
+					t.Fatalf("drain refusal line = %q, want %q", drained.Message, want.Message)
+				}
+			} else if wire.reads != 0 {
+				t.Fatalf("%s read the lifecycle past its own tracked-state gate: %d reads", site.operation, wire.reads)
 			}
 
 			// The one-second turn-state window and the generic unavailable
-			// state keep their own wording and never borrow the drain's.
+			// state keep their own wording and never borrow the drain's. They
+			// are refused from the state the drain was carried on, so the only
+			// difference between these arms and the carried one is the cause.
+			canonical := drainedWriteRefusal(site.write)
 			for _, other := range []struct {
 				name string
 				err  error
@@ -906,9 +957,88 @@ func TestExactAgentControlTellsAnInstallDrainFromTheTurnStateWindow(t *testing.T
 					strings.Contains(response.Message, "install drain") {
 					t.Fatalf("%s refusal = %q, want no drain wording", other.name, response.Error())
 				}
-				if response.Code == drained.Code || response.Message == drained.Message {
+				if response.Code == canonical.Code || response.Message == canonical.Message {
 					t.Fatalf("%s refusal is indistinguishable from the drain: %q", other.name, response.Error())
 				}
+			}
+		})
+	}
+}
+
+// TestExactAgentControlKeepsTheFenceWhileAnInstallDrains is C-2 Scope. Letting
+// a drained read through relaxes exactly one reason to refuse. Every fence the
+// epoch had before it -- its own liveness, the epoch label, the exact identity,
+// the binding generation re-checked after the read, and an empty input -- still
+// refuses, and none of them reaches the provider.
+//
+// The first row is the positive control: the same drain on the same thread
+// with a fence that is current takes the write. Without it every row below
+// would pass just as well against an epoch that refuses everything.
+func TestExactAgentControlKeepsTheFenceWhileAnInstallDrains(t *testing.T) {
+	identity := phase6Identity()
+	otherThread := identity
+	otherThread.ThreadID = "thread-2"
+	active := activeWithThreadState(codexappserver.ThreadStateActive)
+	idle := codexappserver.LifecycleSnapshot{ThreadID: "thread-1", ThreadState: codexappserver.ThreadStateIdle}
+
+	current := func(codexLifecycleIdentity) bool { return true }
+	replaced := func(codexLifecycleIdentity) bool { return false }
+	// replacedAfterRead answers the preamble's fence check and then reports the
+	// binding gone, which is the window the post-read re-check exists for.
+	replacedAfterRead := func() func(codexLifecycleIdentity) bool {
+		calls := 0
+		return func(codexLifecycleIdentity) bool {
+			calls++
+			return calls == 1
+		}
+	}
+
+	for _, site := range []struct {
+		name      string
+		operation string
+		opening   codexappserver.LifecycleSnapshot
+	}{
+		{"start", agentControlOpStart, idle},
+		{"steer", agentControlOpSteer, active},
+		{"deliver", agentControlOpDeliver, active},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			for _, test := range []struct {
+				name     string
+				epoch    string
+				identity codexLifecycleIdentity
+				text     string
+				current  func(codexLifecycleIdentity) bool
+				revoke   bool
+				wantOK   bool
+			}{
+				{name: "a current fence carries the write", epoch: "epoch-1", identity: identity, text: "input", current: current, wantOK: true},
+				{name: "a revoked epoch", epoch: "epoch-1", identity: identity, text: "input", current: current, revoke: true},
+				{name: "another epoch label", epoch: "epoch-2", identity: identity, text: "input", current: current},
+				{name: "another thread", epoch: "epoch-1", identity: otherThread, text: "input", current: current},
+				{name: "a binding that is already gone", epoch: "epoch-1", identity: identity, text: "input", current: replaced},
+				{name: "a binding replaced after the read", epoch: "epoch-1", identity: identity, text: "input", current: replacedAfterRead()},
+				{name: "an empty input", epoch: "epoch-1", identity: identity, current: current},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					wire := &fakeExactControlWire{snapshotErr: &codexbroker.BrokerError{Refusal: codexbroker.RefusalDrainRequired}}
+					epoch := newCodexControlEpoch(wire, identity, "epoch-1", site.opening, test.current)
+					epoch.retryWait = func(context.Context) error { return nil }
+					if test.revoke {
+						epoch.Revoke()
+					}
+					response := epoch.Handle(t.Context(), agentControlRequest{
+						Operation: site.operation, Identity: test.identity, Epoch: test.epoch, Text: test.text,
+					})
+					writes := 1
+					if !test.wantOK {
+						writes = 0
+					}
+					if response.OK != test.wantOK || wire.writes() != writes {
+						t.Fatalf("%s = %+v, writes = %d, want ok=%v with %d writes",
+							site.operation, response, wire.writes(), test.wantOK, writes)
+					}
+				})
 			}
 		})
 	}
